@@ -1,0 +1,3084 @@
+client mio : local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local ContentProvider = game:GetService("ContentProvider")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local currentButtons = {}
+local selectedButtonIndex = 1
+local currentMenuType = nil 
+local buttonActions = {} 
+local soundEnabled = true 
+local didPreloadOnce = false
+
+local hudGui = nil
+local hudScoreLabel = nil
+local hudMuteBtn = nil
+local versusGui = nil
+local waitingOverlay = nil
+
+local COLOR_BG = Color3.fromHex("fef9c3")
+local COLOR_BTN_BASE = Color3.fromHex("eab308")
+local COLOR_BTN_PLAY = Color3.fromHex("facc15")
+local COLOR_BTN_EXIT = Color3.fromHex("a16207")
+local COLOR_BTN_HOVER = Color3.fromHex("fef08a")
+local COLOR_UNDERLINE = Color3.fromHex("a16207")
+local COLOR_TITLE_MAIN = Color3.fromHex("a16207")
+local COLOR_TITLE_ALT = Color3.fromHex("eab308")
+local COLOR_LABEL_BUTTON = Color3.fromHex("fef9c3")
+local COLOR_HUD_MUTE_ON = Color3.fromHex("22c55e")
+local COLOR_HUD_MUTE_OFF = Color3.fromHex("6b7280")
+local COLOR_HUD_EXIT = Color3.fromHex("ef4444")
+
+local HOVER_SOUND_ID = "rbxassetid://500472891"
+local SELECT_SOUND_ID = "rbxassetid://70844388753756"
+local GAMEOVER_SOUND_ID = "rbxassetid://5855421995"
+local PLACE_SOUND_ID = "rbxassetid://4612375233" 
+local PERFECT_SOUND_ID = "rbxassetid://6895079853"
+
+local DONATION_PRODUCTS = {
+	{ Id = 3518446349, Price = 5,    Name = "Cheese Tip" },
+	{ Id = 3518446440, Price = 15,   Name = "Cheese Treat" },
+	{ Id = 3518446529, Price = 50,   Name = "Cheese Sub" },
+	{ Id = 3518446659, Price = 100,  Name = "Cheese Sponsor" },
+	{ Id = 3518446761, Price = 500,  Name = "Cheese Whale" },
+	{ Id = 3518446854, Price = 1000, Name = "Cheese Legend" },
+}
+
+local function createSound(id, volume)
+	if not id or id == "rbxassetid://0" then return nil end
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.Volume = volume
+	s.Parent = script
+	return s
+end
+
+local hoverSound = createSound(HOVER_SOUND_ID, 0.4)
+local selectSound = createSound(SELECT_SOUND_ID, 0.5)
+local gameOverSound = createSound(GAMEOVER_SOUND_ID, 0.7)
+local placeSound = createSound(PLACE_SOUND_ID, 0.8)
+local perfectSound = createSound(PERFECT_SOUND_ID, 1.0)
+
+local function playSound(s)
+	if not soundEnabled then return end
+	if s then s:Play() end
+end
+
+local function findRemotes()
+	local arc = ReplicatedStorage:WaitForChild("ArcadeRemotes", 10)
+	if not arc then return nil end
+	local turrisFolder = arc:WaitForChild("TurrisCasei", 10)
+	local OpenArcadeMenu = arc:WaitForChild("OpenArcadeMenu", 10)
+	if not turrisFolder then return nil, nil, nil, OpenArcadeMenu end
+
+	local StartRequest = turrisFolder:WaitForChild("StartTurrisCaseiRequest", 5)
+	local MatchStatus = turrisFolder:WaitForChild("MatchStatus", 5)
+	local ToggleAudio = turrisFolder:FindFirstChild("ToggleAudio") 
+	local GetAudioState = turrisFolder:FindFirstChild("GetAudioState")
+
+	local LobbySystem = turrisFolder:FindFirstChild("LobbySystem")
+	local UpdateLiveScore, RoomUpdate, PlayerDiedEvent
+	if LobbySystem then
+		UpdateLiveScore = LobbySystem:WaitForChild("UpdateLiveScore", 5)
+		RoomUpdate = LobbySystem:WaitForChild("RoomUpdate", 5)
+		PlayerDiedEvent = LobbySystem:FindFirstChild("PlayerDied")
+	end
+
+	return StartRequest, MatchStatus, OpenArcadeMenu, ToggleAudio, GetAudioState, UpdateLiveScore, RoomUpdate, PlayerDiedEvent
+end
+
+local StartRequest, MatchStatus, OpenArcadeMenu, ToggleAudio, GetAudioState, UpdateLiveScore, RoomUpdate, PlayerDiedEvent = findRemotes()
+local Assets = ReplicatedStorage:WaitForChild("TurrisCasei_Assets", 10)
+
+task.spawn(function()
+	if GetAudioState then
+		local isMuted = GetAudioState:InvokeServer()
+		soundEnabled = not isMuted
+	end
+end)
+if ToggleAudio then
+	ToggleAudio.OnClientEvent:Connect(function(isEnabled)
+		soundEnabled = isEnabled
+		if hudMuteBtn then 
+			if soundEnabled then
+				hudMuteBtn.Text = "SOUND"
+				hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_ON
+			else
+				hudMuteBtn.Text = "MUTED"
+				hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_OFF
+			end
+		end
+	end)
+end
+
+local inGame = false
+local isVersusMode = false 
+local currentTowerFolder = nil
+local cameraOriginalCFrame = nil
+local GAME_ORIGIN = Vector3.new(0, 2000, 0)
+
+local turnTimer = 0 
+local MAX_INITIAL_WAIT = 5 
+local MAX_TURN_TIME = 4    
+local turnPenalty = 0   
+local COMBO_COUNTER = 0
+local SHAKE_INTENSITY = 0
+
+local gameData = {
+	currentBlock = nil, previousBlock = nil, moveConnection = nil,
+	direction = "X", speed = 20, limit = 15, score = 0,
+	startTime = 0, startPos = Vector3.new(), blocksCount = 0,
+	activeBlockData = nil, phase = 0
+}
+
+local TurrisModule = nil
+pcall(function()
+	if ReplicatedStorage:FindFirstChild("Modules") then
+		TurrisModule = require(ReplicatedStorage.Modules:WaitForChild("TurrisCaseiModule", 2))
+	end
+end)
+if not TurrisModule then
+	local ref = ReplicatedStorage:FindFirstChild("TurrisCaseiModule")
+	if ref then TurrisModule = require(ref) end
+end
+if not TurrisModule then
+	TurrisModule = { Settings = { BlockHeight = 1.5, Speed = 20, Tolerance = 3.0 } }
+	TurrisModule.CalculateStack = function() return true, Vector3.new(10,1.5,10), Vector3.zero, nil, true end
+end
+
+local blurEffect = Lighting:FindFirstChild("TurrisMenuBlur") or Instance.new("BlurEffect", Lighting)
+blurEffect.Name = "TurrisMenuBlur"
+blurEffect.Enabled = false
+blurEffect.Size = 0
+
+local originalLighting = {
+	TimeOfDay = Lighting.TimeOfDay,
+	Brightness = Lighting.Brightness,
+	Ambient = Lighting.Ambient,
+	OutdoorAmbient = Lighting.OutdoorAmbient,
+	ColorShift_Bottom = Lighting.ColorShift_Bottom,
+	ColorShift_Top = Lighting.ColorShift_Top,
+	FogColor = Lighting.FogColor,
+	FogEnd = Lighting.FogEnd,
+	FogStart = Lighting.FogStart,
+}
+
+local PlayerScripts = player:WaitForChild("PlayerScripts")
+local PlayerModule = require(PlayerScripts:WaitForChild("PlayerModule"))
+local ControlModule = PlayerModule:GetControls()
+
+local function setBlurEnabled(enabled, intensity)
+	local target = enabled and (intensity or 56) or 0
+	blurEffect.Enabled = true
+	local tween = TweenService:Create(blurEffect, TweenInfo.new(0.3), { Size = target })
+	tween:Play()
+	if not enabled then task.delay(0.3, function() blurEffect.Enabled = false end) end
+end
+
+local function disablePlayerMovement() ControlModule:Disable() end
+local function enablePlayerMovement() ControlModule:Enable() end
+
+local function addGlassEffectToFrame(targetFrame)
+	local glassOverlay = Instance.new("Frame", targetFrame)
+	glassOverlay.Name = "GlassEffectOverlay"
+	glassOverlay.Size = UDim2.new(1, 0, 1, 0)
+	glassOverlay.BackgroundTransparency = 1
+	glassOverlay.ZIndex = targetFrame.ZIndex + 1
+	local corner = Instance.new("UICorner", glassOverlay)
+	local existingCorner = targetFrame:FindFirstChildOfClass("UICorner")
+	corner.CornerRadius = existingCorner and existingCorner.CornerRadius or UDim.new(0, 10)
+
+	local uiStroke = Instance.new("UIStroke", glassOverlay)
+	uiStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	uiStroke.Color = COLOR_TITLE_MAIN 
+	uiStroke.Thickness = 1
+	uiStroke.Transparency = 0.5
+end
+
+local function createIcon(parent, iconType, size, color)
+	local l = Instance.new("TextLabel", parent)
+	l.Size = UDim2.fromOffset(size, size)
+	l.BackgroundTransparency = 1
+	l.TextScaled = true
+	l.TextColor3 = color or Color3.new(1, 1, 1)
+	l.Font = Enum.Font.SourceSans
+	local icons = { controller="🎮", crown="👑", door="🚪", bird="🐦", cheese="🧀", solo="👤", duo="👥", back="⬅️" }
+	l.Text = icons[iconType] or ""
+	return l
+end
+
+local function highlightButton(button)
+	if not button then return end
+	local underline = button:FindFirstChild("Underline")
+	local originalSize = button:GetAttribute("OriginalSize")
+	local originalColor = button:GetAttribute("OriginalColor")
+	if not originalSize then return end
+	local hoverSize = UDim2.new(originalSize.X.Scale * 1.1, originalSize.X.Offset, originalSize.Y.Scale * 1.1, originalSize.Y.Offset)
+	local targetColor = button.BackgroundColor3
+	if originalColor then targetColor = originalColor:Lerp(Color3.new(1, 1, 1), 0.3) end
+	TweenService:Create(button, TweenInfo.new(0.2), { Size = hoverSize, BackgroundColor3 = targetColor }):Play()
+	if underline then TweenService:Create(underline, TweenInfo.new(0.3), { Size = UDim2.new(1, 0, 0, 3) }):Play() end
+end
+
+local function unhighlightButton(button)
+	if not button then return end
+	local underline = button:FindFirstChild("Underline")
+	local originalSize = button:GetAttribute("OriginalSize")
+	local originalColor = button:GetAttribute("OriginalColor")
+	if not originalSize then return end
+	local targetColor = originalColor or button.BackgroundColor3
+	TweenService:Create(button, TweenInfo.new(0.2), { Size = originalSize, BackgroundColor3 = targetColor }):Play()
+	if underline then TweenService:Create(underline, TweenInfo.new(0.2), { Size = UDim2.new(0, 0, 0, 3) }):Play() end
+end
+
+local function updateSelectionVisuals()
+	for i, btn in ipairs(currentButtons) do
+		if i == selectedButtonIndex then highlightButton(btn) else unhighlightButton(btn) end
+	end
+end
+
+local function setupStyledButtonBehavior(button)
+	button:SetAttribute("OriginalSize", button.Size)
+	button:SetAttribute("OriginalColor", button.BackgroundColor3)
+	local underline = Instance.new("Frame", button)
+	underline.Name = "Underline"
+	underline.Size = UDim2.new(0, 0, 0, 3)
+	underline.Position = UDim2.new(0.5, 0, 1, 0)
+	underline.AnchorPoint = Vector2.new(0.5, 1)
+	underline.BackgroundColor3 = COLOR_UNDERLINE
+	underline.BorderSizePixel = 0
+	underline.ZIndex = button.ZIndex + 3
+	button.MouseEnter:Connect(function()
+		for i, btn in ipairs(currentButtons) do
+			if btn == button then
+				if selectedButtonIndex ~= i then playSound(hoverSound) end
+				selectedButtonIndex = i
+				updateSelectionVisuals()
+				break
+			end
+		end
+	end)
+end
+
+local function createStyledButton(parent, text, position, size, colorHex, iconType)
+	local button = Instance.new("TextButton", parent)
+	button.Position = position
+	button.Size = size
+	if typeof(colorHex) == "Color3" then
+		button.BackgroundColor3 = colorHex
+	else
+		button.BackgroundColor3 = colorHex and Color3.fromHex(colorHex) or COLOR_BTN_BASE
+	end
+	button.Text = ""
+	button.BorderSizePixel = 0
+	button.AnchorPoint = Vector2.new(0.5, 0.5)
+	button.AutoButtonColor = false
+	button:SetAttribute("ActionName", text)
+
+	local corner = Instance.new("UICorner", button)
+	corner.CornerRadius = UDim.new(0, 10)
+	addGlassEffectToFrame(button)
+	local content = Instance.new("Frame", button)
+	content.Size = UDim2.new(1, 0, 1, 0)
+	content.BackgroundTransparency = 1
+	content.ZIndex = button.ZIndex + 2
+	local listLayout = Instance.new("UIListLayout", content)
+	listLayout.FillDirection = Enum.FillDirection.Horizontal
+	listLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	listLayout.Padding = UDim.new(0, 10)
+
+	if iconType then 
+		local icon = createIcon(content, iconType, 30, COLOR_LABEL_BUTTON) 
+		icon.LayoutOrder = 1 
+	end
+	local label = Instance.new("TextLabel", content)
+	label.Size = UDim2.new(iconType and 0.6 or 0.9, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextScaled = true
+	label.TextColor3 = COLOR_LABEL_BUTTON
+	label.Font = Enum.Font.GothamBold
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.LayoutOrder = 2
+	setupStyledButtonBehavior(button)
+	return button
+end
+
+local function GetYellowGradientColor(score)
+	local hue = 0.14 + (math.sin(score * 0.1) * 0.04) 
+	return Color3.fromHSV(hue, 0.8, 1)
+end
+
+local function TriggerScreenShake(intensity)
+	SHAKE_INTENSITY = intensity
+	task.spawn(function()
+		local startTime = tick()
+		while (tick() - startTime) < 0.25 do
+			if not inGame then break end
+			local shake = Vector3.new(
+				(math.random() - 0.5) * SHAKE_INTENSITY,
+				(math.random() - 0.5) * SHAKE_INTENSITY,
+				(math.random() - 0.5) * SHAKE_INTENSITY
+			)
+			local cam = workspace.CurrentCamera
+			cam.CFrame = cam.CFrame * CFrame.new(shake)
+			RunService.RenderStepped:Wait()
+			cam.CFrame = cam.CFrame * CFrame.new(-shake)
+		end
+		SHAKE_INTENSITY = 0
+	end)
+end
+
+local function FlashBlock(block)
+	local t = TweenService:Create(block, TweenInfo.new(0.1), {Color = Color3.new(1,1,1)})
+	t:Play()
+	t.Completed:Connect(function()
+		local targetColor = block:GetAttribute("OriginalColor") or block.Color
+		TweenService:Create(block, TweenInfo.new(0.3), {Color = targetColor}):Play()
+	end)
+end
+
+local function SpawnShockwave(pos)
+	local ring = Instance.new("Part")
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Anchored = true
+	ring.CanCollide = false
+	ring.Material = Enum.Material.Neon
+	ring.Color = Color3.fromRGB(255, 255, 200)
+	ring.Size = Vector3.new(0.5, 10, 10)
+	ring.CFrame = CFrame.new(pos) * CFrame.Angles(0,0,math.rad(90))
+	ring.Parent = workspace
+	Debris:AddItem(ring, 1)
+	TweenService:Create(ring, TweenInfo.new(0.5), {
+		Size = Vector3.new(0.5, 30, 30),
+		Transparency = 1
+	}):Play()
+end
+
+local function SpawnCutParticles(pos, color)
+	local att = Instance.new("Attachment")
+	att.Parent = workspace.Terrain
+	att.WorldPosition = pos
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Texture = "rbxassetid://1266170131"
+	emitter.Color = ColorSequence.new(color)
+	emitter.Size = NumberSequence.new(0.5, 0)
+	emitter.Lifetime = NumberRange.new(0.5, 0.8)
+	emitter.Speed = NumberRange.new(10, 20)
+	emitter.SpreadAngle = Vector2.new(360, 360)
+	emitter.Rate = 0
+	emitter.Parent = att
+	emitter:Emit(20)
+	Debris:AddItem(att, 2)
+end
+
+local function PopBlock(block)
+	local originalSize = block.Size
+	block.Size = originalSize * 1.2
+	TweenService:Create(block, TweenInfo.new(0.2, Enum.EasingStyle.Bounce), {Size = originalSize}):Play()
+end
+
+local function destroyEndGui()
+	if playerGui:FindFirstChild("TurrisEndGui") then
+		playerGui.TurrisEndGui:Destroy()
+	end
+end
+
+-- ==============================================
+-- 🧹 FUNCION PARA LIMPIAR TODOS LOS MENÚS
+-- ==============================================
+local function destroyAllMenus()
+	local names = {"TurrisArcadeMenu", "TurrisPlayModeMenu", "TurrisDonateMenu", "TurrisEndGui", "TurrisHUD", "VersusHUD", "WaitingOverlay", "SuddenDeathAlert"}
+	for _, n in ipairs(names) do
+		if playerGui:FindFirstChild(n) then
+			playerGui[n]:Destroy()
+		end
+	end
+end
+
+-- 🔥 AQUI ESTÁ LA REPARACIÓN DE LA CÁMARA 🔥
+local function Cleanup3DGame()
+	if gameData.moveConnection then gameData.moveConnection:Disconnect() end
+	if currentTowerFolder then currentTowerFolder:Destroy() end
+
+	if hudGui then hudGui:Destroy(); hudGui = nil end
+	if versusGui then versusGui:Destroy(); versusGui = nil end
+	if waitingOverlay then waitingOverlay:Destroy(); waitingOverlay = nil end
+
+	-- FORZAR EL REGRESO DE LA CÁMARA AL JUGADOR
+	local cam = workspace.CurrentCamera
+	cam.CameraType = Enum.CameraType.Custom
+	cam.FieldOfView = 70
+	if player.Character then
+		local humanoid = player.Character:FindFirstChild("Humanoid")
+		local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+		if humanoid and hrp then
+			cam.CameraSubject = humanoid
+			-- Teletransportar la cámara físicamente para que no se quede atrapada arriba
+			cam.CFrame = CFrame.lookAt(hrp.Position + Vector3.new(0, 5, 12), hrp.Position)
+		end
+	end
+
+	-- Restaurar la iluminación al mundo normal
+	Lighting.TimeOfDay = originalLighting.TimeOfDay
+	Lighting.Brightness = originalLighting.Brightness
+	Lighting.Ambient = originalLighting.Ambient
+	Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+	Lighting.ColorShift_Bottom = originalLighting.ColorShift_Bottom
+	Lighting.ColorShift_Top = originalLighting.ColorShift_Top
+	Lighting.FogColor = originalLighting.FogColor
+	Lighting.FogEnd = originalLighting.FogEnd
+	Lighting.FogStart = originalLighting.FogStart
+
+	local customAtmo = Lighting:FindFirstChild("SunsetAtmosphere")
+	if customAtmo then customAtmo:Destroy() end
+	local customSky = Lighting:FindFirstChild("SunsetSky")
+	if customSky then customSky:Destroy() end
+	local customClouds = workspace.Terrain:FindFirstChild("SunsetClouds")
+	if customClouds then customClouds:Destroy() end
+end
+
+local createMenuGui 
+
+local function FullQuitGame()
+	playSound(selectSound)
+	inGame = false
+	isVersusMode = false
+	currentMenuType = nil
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+	destroyAllMenus() 
+
+	if currentTowerFolder then currentTowerFolder:Destroy() end
+	Cleanup3DGame()
+
+	setBlurEnabled(false)
+	enablePlayerMovement() 
+end
+
+local function ReturnToMainMenu()
+	playSound(selectSound)
+	inGame = false
+	isVersusMode = false
+	currentMenuType = nil
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+	destroyAllMenus()
+
+	if currentTowerFolder then currentTowerFolder:Destroy() end
+	Cleanup3DGame()
+
+	createMenuGui() 
+end
+
+local createPlayModeMenu 
+local createDonateMenu
+local endGame 
+local Setup3DGame 
+local createInGameHUD 
+
+local function setupMenuNavigation(newMenuType, buttonsToAdd)
+	currentMenuType = newMenuType
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+	selectedButtonIndex = 1
+	for _, btn in ipairs(buttonsToAdd) do
+		table.insert(currentButtons, btn)
+	end
+	updateSelectionVisuals()
+end
+
+-- ==============================================
+-- ⏳ MENSAJE DE "ESPERANDO" Y "EL JUEGO TERMINA"
+-- ==============================================
+local function showWaitingOverlay(titleText, subText, color)
+	if waitingOverlay then waitingOverlay:Destroy() end
+	local gui = Instance.new("ScreenGui", playerGui)
+	gui.Name = "WaitingOverlay"
+	gui.DisplayOrder = 99999 -- Mantiene esta pantalla arriba
+
+	local frame = Instance.new("Frame", gui)
+	frame.Size = UDim2.new(0.6, 0, 0.3, 0) 
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	frame.BackgroundTransparency = 0.5
+
+	local aspectRatio = Instance.new("UIAspectRatioConstraint", frame)
+	aspectRatio.AspectRatio = 400 / 150
+	local sizeLim = Instance.new("UISizeConstraint", frame)
+	sizeLim.MaxSize = Vector2.new(600, 225)
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+
+	local title = Instance.new("TextLabel", frame)
+	title.Text = titleText or "YOU DIED!"
+	title.Font = Enum.Font.GothamBlack
+	title.TextColor3 = color or Color3.fromRGB(255, 100, 100)
+	title.TextScaled = true
+	title.Size = UDim2.new(1, 0, 0.4, 0)
+	title.Position = UDim2.new(0, 0, 0.1, 0)
+	title.BackgroundTransparency = 1
+
+	local subTitle = Instance.new("TextLabel", frame)
+	subTitle.Text = subText or "Waiting for winner..."
+	subTitle.Font = Enum.Font.GothamBold
+	subTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	subTitle.TextScaled = true
+	subTitle.Size = UDim2.new(1, 0, 0.3, 0)
+	subTitle.Position = UDim2.new(0, 0, 0.5, 0)
+	subTitle.BackgroundTransparency = 1
+
+	waitingOverlay = gui
+end
+
+-- ==============================================
+-- 🏆 VENTANA RESULTADOS VERSUS (AQUÍ ESTÁ "WINNER'S SCORE")
+-- ==============================================
+local function showEndOverlay(score, isWin)
+	destroyAllMenus() 
+
+	playSound(isWin and perfectSound or gameOverSound)
+	setBlurEnabled(true, 56)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TurrisEndGui"
+	screenGui.ResetOnSpawn = false
+	screenGui.DisplayOrder = 99999 
+
+	local frame = Instance.new("Frame", screenGui)
+	frame.Size = UDim2.new(0.6, 0, 0.4, 0) 
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = COLOR_BG
+
+	local sizeLim = Instance.new("UISizeConstraint", frame)
+	sizeLim.MaxSize = Vector2.new(600, 375)
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+
+	local title = Instance.new("TextLabel", frame)
+	-- Aplicamos el texto "WINNER'S SCORE" para que el que pierda no se confunda
+	title.Text = (isWin and "VICTORY!" or "GAME OVER") .. "\nWINNER'S SCORE: " .. tostring(score)
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.Size = UDim2.new(1,0,0.35,0)
+	title.Position = UDim2.new(0,0,0.05,0)
+	title.BackgroundTransparency = 1
+
+	local menuBtn = createStyledButton(frame, "MENU", UDim2.new(0.28, 0, 0.75, 0), UDim2.new(0.4, 0, 0.22, 0), COLOR_BTN_BASE, "controller")
+	local exitBtn = createStyledButton(frame, "EXIT", UDim2.new(0.72, 0, 0.75, 0), UDim2.new(0.4, 0, 0.22, 0), COLOR_BTN_EXIT, "door")
+
+	local function onMenu()
+		playSound(selectSound)
+		screenGui:Destroy()
+		createMenuGui()
+	end
+
+	local function onExit()
+		playSound(selectSound)
+		screenGui:Destroy()
+		setBlurEnabled(false)
+		enablePlayerMovement()
+		currentMenuType = nil
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+		FullQuitGame()
+	end
+
+	buttonActions[menuBtn] = onMenu
+	buttonActions[exitBtn] = onExit
+
+	menuBtn.MouseButton1Click:Connect(onMenu)
+	exitBtn.MouseButton1Click:Connect(onExit)
+
+	setupMenuNavigation("GameOver", {menuBtn, exitBtn})
+end
+
+local function HandleButtonAction(btn)
+	if not btn then return end
+	local action = btn:GetAttribute("ActionName")
+
+	playSound(selectSound)
+
+	if action == "PLAY" then
+		if playerGui:FindFirstChild("TurrisArcadeMenu") then playerGui.TurrisArcadeMenu:Destroy() end
+		createPlayModeMenu()
+
+	elseif action == "VIP" or action == "TURRIS" then
+		if playerGui:FindFirstChild("TurrisArcadeMenu") then playerGui.TurrisArcadeMenu:Destroy() end
+		createDonateMenu()
+
+	elseif action == "EXIT" then
+		FullQuitGame()
+
+	elseif action == "SOLO" then
+		if playerGui:FindFirstChild("TurrisPlayModeMenu") then playerGui.TurrisPlayModeMenu:Destroy() end
+		currentMenuType = nil
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+		inGame = true
+		isVersusMode = false
+		disablePlayerMovement()
+		if StartRequest then pcall(function() StartRequest:FireServer("Solo") end) end
+		Setup3DGame()
+
+	elseif action == "VERSUS" then
+		if playerGui:FindFirstChild("TurrisPlayModeMenu") then playerGui.TurrisPlayModeMenu:Destroy() end
+		currentMenuType = nil 
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+		local success, LobbyClient = pcall(function()
+			return require(player.PlayerScripts:WaitForChild("TurrisCaseiLobbyClient"))
+		end)
+		if success and LobbyClient and LobbyClient.OpenMenu then
+			LobbyClient.OpenMenu()
+		else
+			warn("No se pudo cargar TurrisCaseiLobbyClient")
+		end
+
+	elseif action == "BACK" or action == "MENU" then
+		ReturnToMainMenu()
+
+	elseif action == "EXIT_GAME" then
+		FullQuitGame()
+
+	elseif string.find(action, "DONATE") then
+		local id = tonumber(string.match(action, "%d+"))
+		if id then MarketplaceService:PromptProductPurchase(player, id) end
+	end
+end
+
+local function createVersusHUD()
+	if playerGui:FindFirstChild("VersusHUD") then playerGui.VersusHUD:Destroy() end
+	local gui = Instance.new("ScreenGui", playerGui)
+	gui.Name = "VersusHUD"
+	local barBg = Instance.new("Frame", gui)
+	barBg.Size = UDim2.new(0.03, 0, 0.6, 0) -- Responsive
+	barBg.Position = UDim2.new(0.95, 0, 0.2, 0)
+	barBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	barBg.BorderSizePixel = 0
+
+	local sizeLim = Instance.new("UISizeConstraint", barBg)
+	sizeLim.MaxSize = Vector2.new(40, 800)
+	sizeLim.MinSize = Vector2.new(20, 200)
+
+	Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+	local fill = Instance.new("Frame", barBg)
+	fill.Name = "Fill"
+	fill.Size = UDim2.new(1, 0, 1, 0) 
+	fill.BackgroundTransparency = 1
+	versusGui = gui
+end
+
+local function updateVersusHUD(playerList)
+	if not versusGui then return end
+	local fill = versusGui:FindFirstChild("Frame"):FindFirstChild("Fill")
+	if not fill then return end
+	for _, c in ipairs(fill:GetChildren()) do if c:IsA("ImageLabel") then c:Destroy() end end
+	for _, pData in ipairs(playerList) do
+		local score = pData.Score or 0
+		local percent = math.clamp(score / 50, 0, 1)
+
+		local icon = Instance.new("ImageLabel", fill)
+		icon.Size = UDim2.new(1.5, 0, 1.5, 0)
+
+		local aspectRatio = Instance.new("UIAspectRatioConstraint", icon)
+		aspectRatio.AspectRatio = 1
+
+		icon.Position = UDim2.new(0.5, 0, 1 - percent, 0)
+		icon.AnchorPoint = Vector2.new(0.5, 0.5)
+		icon.BackgroundTransparency = 1 
+		icon.ZIndex = 5 
+
+		icon.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(pData.Id) .. "&w=150&h=150"
+
+		Instance.new("UICorner", icon).CornerRadius = UDim.new(1, 0)
+
+		if not pData.Alive then
+			icon.ImageColor3 = Color3.new(0.2, 0.2, 0.2)
+			local x = Instance.new("TextLabel", icon)
+			x.Size = UDim2.fromScale(1,1)
+			x.BackgroundTransparency = 1
+			x.Text = "❌"
+			x.TextScaled = true
+			x.ZIndex = 6
+		end
+
+		if pData.Name == player.Name then
+			local s = Instance.new("UIStroke", icon);
+			s.Thickness=2; s.Color=Color3.new(1,1,0)
+		end
+	end
+end
+
+local function ShowBonusText(pos, text, color)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Adornee = nil
+	billboard.Size = UDim2.fromScale(4, 2)
+	billboard.AlwaysOnTop = true
+	local lbl = Instance.new("TextLabel", billboard)
+	lbl.Size = UDim2.fromScale(1,1)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.TextColor3 = color
+	lbl.Font = Enum.Font.GothamBlack
+	lbl.TextScaled = true
+	local stroke = Instance.new("UIStroke", lbl)
+	stroke.Thickness = 2
+	local part = Instance.new("Part")
+	part.Anchored = true;
+	part.CanCollide = false; part.Transparency = 1; part.Position = pos; part.Parent = workspace
+	billboard.Adornee = part;
+	billboard.Parent = playerGui
+	TweenService:Create(part, TweenInfo.new(1), {Position = pos + Vector3.new(0, 5, 0)}):Play()
+	Debris:AddItem(part, 1);
+	Debris:AddItem(billboard, 1)
+end
+
+-- ==============================================
+-- 🔥 EVENTOS MULTIJUGADOR CORREGIDOS 🔥
+-- ==============================================
+if RoomUpdate then
+	RoomUpdate.OnClientEvent:Connect(function(type, data)
+		if type == "ScoreUpdate" and inGame and isVersusMode then
+			updateVersusHUD(data)
+
+		elseif type == "StartGame" then
+			FullQuitGame()
+			task.wait(0.1)
+			inGame = true
+			isVersusMode = true
+			disablePlayerMovement()
+			Setup3DGame()
+			createVersusHUD()
+
+		elseif type == "MatchEnded" then
+			inGame = false
+			isVersusMode = false
+			Cleanup3DGame() 
+			-- 🔥 SE ELIMINÓ enablePlayerMovement() DE AQUÍ PARA MANTENER AL JUGADOR CONGELADO
+			local win = (data.Winner == player.Name)
+			showEndOverlay(data.Score, win)
+
+		elseif type == "EliminatedEarly" then
+			inGame = false
+			isVersusMode = false
+			Cleanup3DGame() 
+			-- 🔥 SE ELIMINÓ enablePlayerMovement() DE AQUÍ PARA MANTENER AL JUGADOR CONGELADO
+			showEndOverlay(data.Score, false)
+
+		elseif type == "SuddenDeathWait" then
+			showWaitingOverlay("YOU DIED!", "The game ends in 5 seconds...", Color3.fromRGB(255, 100, 100))
+
+		elseif type == "SuddenDeath" then
+			playSound(perfectSound)
+
+			if inGame then
+				local alertGui = Instance.new("ScreenGui", playerGui)
+				alertGui.Name = "SuddenDeathAlert"
+				alertGui.DisplayOrder = 99999
+
+				local alertText = Instance.new("TextLabel", alertGui)
+				alertText.Size = UDim2.new(0.8, 0, 0.15, 0)
+				alertText.Position = UDim2.new(0.5, 0, 0.85, 0)
+				alertText.AnchorPoint = Vector2.new(0.5, 0.5) 
+				alertText.BackgroundTransparency = 1
+				alertText.Text = "SUDDEN DEATH!\nTHE GAME ENDS IN 5 SECONDS!"
+				alertText.TextColor3 = Color3.fromRGB(255, 50, 50)
+				alertText.Font = Enum.Font.GothamBlack
+				alertText.TextScaled = true
+
+				local stroke = Instance.new("UIStroke", alertText)
+				stroke.Thickness = 4
+				stroke.Color = Color3.fromRGB(0, 0, 0)
+
+				Debris:AddItem(alertGui, 5) 
+			else
+				showWaitingOverlay("YOU DIED!", "The game ends in 5 seconds...", Color3.fromRGB(255, 100, 100))
+			end
+		end
+	end)
+end
+
+local function ScrollTowerDown()
+	local THRESHOLD = 6
+	local bHeight = (TurrisModule.Settings and TurrisModule.Settings.BlockHeight) or 1.5
+	if gameData.blocksCount > THRESHOLD then
+		for _, obj in ipairs(currentTowerFolder:GetChildren()) do
+			if obj.Name ~= "RoomModel" then
+				local newY = obj.Position.Y - bHeight
+				TweenService:Create(obj, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {
+					Position = Vector3.new(obj.Position.X, newY, obj.Position.Z)
+				}):Play()
+				if newY < (GAME_ORIGIN.Y - (bHeight * 1)) then obj:Destroy() end
+			end
+		end
+	end
+end
+
+local function SpawnNextBlock()
+	if not inGame or not gameData.previousBlock then return end
+	local prevPos = gameData.previousBlock.Position
+	local spawnPos
+	local bHeight = TurrisModule.Settings.BlockHeight or 1.5
+	local limit = gameData.limit or 15
+
+	gameData.direction = (gameData.direction == "X") and "Z" or "X"
+	if gameData.direction == "X" then
+		spawnPos = prevPos + Vector3.new(-limit, bHeight, 0)
+	else
+		spawnPos = prevPos + Vector3.new(0, bHeight, -limit)
+	end
+
+	local nextBlockData = TurrisModule.PickNextBlockData()
+	gameData.activeBlockData = nextBlockData
+
+	local finalColor = nextBlockData.Color
+	if nextBlockData.Type == "Normal" then
+		finalColor = GetYellowGradientColor(gameData.score)
+	end
+
+	local newBlock = Assets.QuesoBlock:Clone()
+	newBlock.Size = Vector3.new(gameData.previousBlock.Size.X, bHeight, gameData.previousBlock.Size.Z)
+	newBlock.CFrame = CFrame.new(spawnPos)
+	newBlock.Color = finalColor
+	newBlock:SetAttribute("OriginalColor", finalColor)
+	newBlock.Parent = currentTowerFolder
+
+	local alignLight = Instance.new("SpotLight")
+	alignLight.Name = "AlignLight"
+	alignLight.Face = Enum.NormalId.Bottom
+	alignLight.Angle = 90
+	alignLight.Brightness = 0 
+	alignLight.Range = 20
+	alignLight.Color = Color3.fromRGB(57, 255, 20)
+	alignLight.Parent = newBlock
+
+	if nextBlockData.Value ~= 0 then
+		local sg = Instance.new("SurfaceGui", newBlock)
+		sg.Face = Enum.NormalId.Top
+		sg.CanvasSize = Vector2.new(100, 100)
+		sg.AlwaysOnTop = false
+		sg.LightInfluence = 0
+
+		local lbl = Instance.new("TextLabel", sg)
+		lbl.Size = UDim2.fromScale(1,1)
+		lbl.BackgroundTransparency = 1
+		local prefix = (nextBlockData.Value > 0) and "+" or ""
+		lbl.Text = prefix .. tostring(nextBlockData.Value)
+		lbl.TextColor3 = Color3.new(1,1,1)
+		lbl.Font = Enum.Font.GothamBlack
+		lbl.TextScaled = true
+		local stroke = Instance.new("UIStroke", lbl)
+		stroke.Thickness = 3
+	end
+
+	local highlight = Instance.new("Highlight")
+	highlight.Adornee = newBlock
+	highlight.FillTransparency = 1
+	highlight.OutlineColor = Color3.fromRGB(255, 140, 0)
+	highlight.OutlineTransparency = 0
+	highlight.Parent = newBlock
+
+	gameData.currentBlock = newBlock
+	gameData.startPos = spawnPos
+	turnTimer = tick()
+end
+
+local function StartMovementLoop()
+	if gameData.moveConnection then gameData.moveConnection:Disconnect() end
+
+	gameData.phase = -math.pi / 2 
+
+	gameData.moveConnection = RunService.RenderStepped:Connect(function(dt)
+		if not inGame or not gameData.currentBlock then return end
+
+		if isVersusMode then
+			local elapsed = tick() - turnTimer
+			if gameData.score == 0 and elapsed > MAX_INITIAL_WAIT then 
+				inGame = false 
+				if PlayerDiedEvent then PlayerDiedEvent:FireServer() end
+				return 
+			end
+			if gameData.score > 0 and elapsed > MAX_TURN_TIME then
+				turnPenalty = (elapsed - MAX_TURN_TIME) * 5
+			else
+				turnPenalty = 0
+			end
+		end
+
+		local sx = gameData.previousBlock.Size.X
+		local sz = gameData.previousBlock.Size.Z
+		local currentSize = (gameData.direction == "X") and sx or sz
+
+		local sizeFactor = math.clamp(currentSize / 10, 0.4, 1.0) 
+		local currentSpeed = ((gameData.speed or 20) * sizeFactor) + turnPenalty
+
+		local MAX_ALLOWED_SPEED = 30 
+		if currentSpeed > MAX_ALLOWED_SPEED then currentSpeed = MAX_ALLOWED_SPEED end
+
+		gameData.phase = gameData.phase + (dt * (currentSpeed / 10))
+
+		local limit = gameData.limit or 15
+		local offset = math.sin(gameData.phase) * limit
+
+		local basePos = gameData.startPos
+		local targetPos
+
+		if gameData.direction == "X" then
+			targetPos = Vector3.new(gameData.previousBlock.Position.X + offset, basePos.Y, basePos.Z)
+		else
+			targetPos = Vector3.new(basePos.X, basePos.Y, gameData.previousBlock.Position.Z + offset)
+		end
+
+		gameData.currentBlock.Position = targetPos
+
+		local diff = 0
+		if gameData.direction == "X" then
+			diff = targetPos.X - gameData.previousBlock.Position.X
+		else
+			diff = targetPos.Z - gameData.previousBlock.Position.Z
+		end
+
+		local tolerance = (TurrisModule and TurrisModule.Settings and TurrisModule.Settings.Tolerance) or 3.0
+		local light = gameData.currentBlock:FindFirstChild("AlignLight")
+		if light then
+			if math.abs(diff) <= tolerance then
+				light.Brightness = 10 
+				gameData.currentBlock.Material = Enum.Material.Neon
+			else
+				light.Brightness = 0
+				if gameData.activeBlockData and gameData.activeBlockData.Type == "Normal" then
+					gameData.currentBlock.Material = Enum.Material.SmoothPlastic
+				end
+			end
+		end
+	end)
+end
+
+local function UpdateDynamicCamera()
+	local cam = workspace.CurrentCamera
+	if inGame and gameData.currentBlock then
+		local sx = gameData.currentBlock.Size.X
+		local sz = gameData.currentBlock.Size.Z
+		local minDim = math.min(sx, sz)
+
+		local targetFOV = 70
+		local targetPos = GAME_ORIGIN + Vector3.new(13, 28, 15) 
+
+		local lookAtPos = Vector3.new(GAME_ORIGIN.X, gameData.currentBlock.Position.Y - 2, GAME_ORIGIN.Z)
+
+		if minDim < 6.0 then
+			local percent = math.clamp(minDim / 6.0, 0.2, 1.0)
+
+			targetFOV = 50 + (20 * percent) 
+
+			local offsetX = 8 + (5 * percent)
+			local offsetY = 22 + (6 * percent) 
+			local offsetZ = 10 + (5 * percent)
+
+			targetPos = GAME_ORIGIN + Vector3.new(offsetX, offsetY, offsetZ)
+		end
+
+		local tweenInfo = TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		TweenService:Create(cam, tweenInfo, {
+			FieldOfView = targetFOV,
+			CFrame = CFrame.lookAt(targetPos, lookAtPos)
+		}):Play()
+	end
+end
+
+local function PlaceBlock()
+	if not inGame or not gameData.currentBlock then return end
+	gameData.moveConnection:Disconnect()
+
+	local success, newSize, offset, fallingPartData, bonusScore = TurrisModule.CalculateStack(
+		gameData.previousBlock.Size, gameData.previousBlock.CFrame, gameData.currentBlock.CFrame, gameData.activeBlockData
+	)
+
+	if not success then
+		gameData.currentBlock.Anchored = false
+		Debris:AddItem(gameData.currentBlock, 2)
+		playSound(gameOverSound)
+		TriggerScreenShake(0.8)
+		inGame = false 
+
+		if isVersusMode then
+			if PlayerDiedEvent then PlayerDiedEvent:FireServer() end
+
+			showWaitingOverlay("YOU DIED!", "Waiting for winner...", Color3.fromRGB(255, 100, 100))
+			setBlurEnabled(true, 56)
+		else
+			task.wait(1)
+			showEndOverlay(gameData.score, false)
+		end
+		return
+	end
+
+	local bHeight = TurrisModule.Settings.BlockHeight or 1.5
+	local prevPos = gameData.previousBlock.Position
+	local newCenter = Vector3.new(prevPos.X + offset.X, prevPos.Y + bHeight, prevPos.Z + offset.Z)
+
+	gameData.currentBlock.Size = newSize
+	gameData.currentBlock.CFrame = CFrame.new(newCenter)
+
+	for _, v in ipairs(gameData.currentBlock:GetChildren()) do
+		if v:IsA("SurfaceGui") or v:IsA("SpotLight") then
+			v:Destroy()
+		end
+	end
+
+	PopBlock(gameData.currentBlock)
+	FlashBlock(gameData.currentBlock)
+
+	if fallingPartData then
+		COMBO_COUNTER = 0
+		playSound(placeSound)
+		SpawnCutParticles(newCenter, gameData.currentBlock.Color)
+		TriggerScreenShake(0.3)
+
+		local waste = gameData.currentBlock:Clone()
+		waste.Name = "Waste"; waste.Anchored = false;
+		waste.CanCollide = false
+		waste:FindFirstChild("Highlight"):Destroy()
+		for _, v in ipairs(waste:GetChildren()) do if v:IsA("SurfaceGui") then v:Destroy() end end
+
+		Debris:AddItem(waste, 0.3)
+
+		if gameData.direction == "X" then
+			waste.Size = Vector3.new(math.abs(fallingPartData.diffX), newSize.Y, newSize.Z)
+			local wasteX = (fallingPartData.diffX > 0) and (newCenter.X + newSize.X/2 + waste.Size.X/2) or (newCenter.X - newSize.X/2 - waste.Size.X/2)
+			waste.Position = Vector3.new(wasteX, newCenter.Y, newCenter.Z)
+		else
+			waste.Size = Vector3.new(newSize.X, newSize.Y, math.abs(fallingPartData.diffZ))
+			local wasteZ = (fallingPartData.diffZ > 0) and (newCenter.Z + newSize.Z/2 + waste.Size.Z/2) or (newCenter.Z - newSize.Z/2 - waste.Size.Z/2)
+			waste.Position = Vector3.new(newCenter.X, newCenter.Y, wasteZ)
+		end
+		waste.Parent = currentTowerFolder
+	else
+		COMBO_COUNTER = COMBO_COUNTER + 1
+		playSound(perfectSound)
+		SpawnShockwave(newCenter)
+		TriggerScreenShake(0.1)
+		if COMBO_COUNTER > 1 then
+			gameData.currentBlock.Material = Enum.Material.Neon
+			if gameData.activeBlockData.Type == "Normal" then
+				gameData.currentBlock.Color = Color3.fromHSV(0.16, 1, 1)
+			end
+		end
+	end
+
+	local points = 1
+	if type(bonusScore) == "number" then
+		points = 1 + bonusScore
+		if bonusScore > 0 then
+			ShowBonusText(newCenter, "+"..tostring(bonusScore).."!", Color3.new(0,1,0))
+		elseif bonusScore < 0 then
+			ShowBonusText(newCenter, tostring(bonusScore), Color3.new(1,0,0))
+		end
+	end
+
+	gameData.score = gameData.score + points
+	gameData.blocksCount = gameData.blocksCount + 1
+	gameData.previousBlock = gameData.currentBlock
+
+	gameData.speed = TurrisModule.GetNextSpeed(gameData.speed)
+
+	UpdateDynamicCamera()
+	if isVersusMode and UpdateLiveScore then UpdateLiveScore:FireServer(gameData.score) end
+	if hudScoreLabel then hudScoreLabel.Text = "SCORE: " .. tostring(gameData.score) end
+	ScrollTowerDown()
+	SpawnNextBlock()
+	StartMovementLoop()
+end
+
+exitCurrentGame = function()
+	playSound(selectSound)
+	inGame = false
+	destroyEndGui() 
+	Cleanup3DGame()
+	createMenuGui()
+end
+
+createInGameHUD = function()
+	if playerGui:FindFirstChild("TurrisHUD") then playerGui.TurrisHUD:Destroy() end
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TurrisHUD"
+	screenGui.ResetOnSpawn = false
+
+	local scoreFrame = Instance.new("Frame", screenGui)
+	scoreFrame.Size = UDim2.new(0.2, 0, 0.08, 0) -- Responsive
+	scoreFrame.Position = UDim2.new(0.02, 0, 0.02, 0)
+	scoreFrame.BackgroundColor3 = COLOR_BTN_BASE
+
+	local sizeLimScore = Instance.new("UISizeConstraint", scoreFrame)
+	sizeLimScore.MaxSize = Vector2.new(200, 60)
+	sizeLimScore.MinSize = Vector2.new(100, 35)
+
+	Instance.new("UICorner", scoreFrame).CornerRadius = UDim.new(0, 8)
+	addGlassEffectToFrame(scoreFrame)
+
+	hudScoreLabel = Instance.new("TextLabel", scoreFrame)
+	hudScoreLabel.Size = UDim2.new(1,0,1,0)
+	hudScoreLabel.BackgroundTransparency = 1
+	hudScoreLabel.Text = "SCORE: 0"
+	hudScoreLabel.Font = Enum.Font.GothamBlack
+	hudScoreLabel.TextColor3 = Color3.new(1,1,1)
+	hudScoreLabel.TextScaled = true
+
+	local btnContainer = Instance.new("Frame", screenGui)
+	btnContainer.Size = UDim2.new(0.25, 0, 0.08, 0) -- Responsive
+	btnContainer.Position = UDim2.new(0.73, 0, 0.02, 0)
+	btnContainer.BackgroundTransparency = 1
+
+	local sizeLimCont = Instance.new("UISizeConstraint", btnContainer)
+	sizeLimCont.MaxSize = Vector2.new(250, 60)
+	sizeLimCont.MinSize = Vector2.new(120, 35)
+
+	local list = Instance.new("UIListLayout", btnContainer)
+	list.FillDirection = Enum.FillDirection.Horizontal
+	list.Padding = UDim.new(0, 10)
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Right
+
+	hudMuteBtn = Instance.new("TextButton", btnContainer)
+	hudMuteBtn.Size = UDim2.new(0.5, 0, 1, 0)
+	hudMuteBtn.TextScaled = true
+	hudMuteBtn.Font = Enum.Font.GothamBold
+	hudMuteBtn.TextColor3 = Color3.new(1,1,1)
+	Instance.new("UICorner", hudMuteBtn).CornerRadius = UDim.new(0,8)
+	addGlassEffectToFrame(hudMuteBtn)
+
+	local function updateMuteVisuals()
+		if soundEnabled then
+			hudMuteBtn.Text = "SOUND";
+			hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_ON
+		else
+			hudMuteBtn.Text = "MUTED"; hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_OFF
+		end
+	end
+	updateMuteVisuals()
+	hudMuteBtn.MouseButton1Click:Connect(function()
+		soundEnabled = not soundEnabled
+		updateMuteVisuals()
+		if ToggleAudio then ToggleAudio:FireServer(soundEnabled) end
+	end)
+
+	local exitBtn = Instance.new("TextButton", btnContainer)
+	exitBtn.Size = UDim2.new(0.4, 0, 1, 0)
+	exitBtn.BackgroundColor3 = COLOR_HUD_EXIT
+	exitBtn.Text = "EXIT"
+	exitBtn.TextScaled = true
+	exitBtn.Font = Enum.Font.GothamBold
+	exitBtn.TextColor3 = Color3.new(1,1,1)
+	Instance.new("UICorner", exitBtn).CornerRadius = UDim.new(0,8)
+	addGlassEffectToFrame(exitBtn)
+	exitBtn.MouseButton1Click:Connect(function() 
+		if isVersusMode then
+			local lobbyRemotes = ReplicatedStorage.ArcadeRemotes.TurrisCasei.LobbySystem
+			if lobbyRemotes then lobbyRemotes.LeaveRoom:FireServer() end
+			FullQuitGame()
+		else
+			FullQuitGame()
+		end
+	end)
+	hudGui = screenGui
+end
+
+Setup3DGame = function()
+	setBlurEnabled(false)
+	if currentTowerFolder then currentTowerFolder:Destroy() end
+	currentTowerFolder = Instance.new("Folder")
+	currentTowerFolder.Name = "Local_TurrisCasei_Game"
+	currentTowerFolder.Parent = workspace
+
+	if not Assets:FindFirstChild("RoomModel") or not Assets:FindFirstChild("BaseP1") then
+		warn("Faltan Assets!")
+		return
+	end
+
+	originalLighting.TimeOfDay = Lighting.TimeOfDay
+	originalLighting.Brightness = Lighting.Brightness
+	originalLighting.Ambient = Lighting.Ambient
+	originalLighting.OutdoorAmbient = Lighting.OutdoorAmbient
+	originalLighting.ColorShift_Bottom = Lighting.ColorShift_Bottom
+	originalLighting.ColorShift_Top = Lighting.ColorShift_Top
+	originalLighting.FogColor = Lighting.FogColor
+	originalLighting.FogEnd = Lighting.FogEnd
+	originalLighting.FogStart = Lighting.FogStart
+
+	for _, child in ipairs(Lighting:GetChildren()) do
+		if child:IsA("Sky") or child:IsA("Atmosphere") then child:Destroy() end
+	end
+	for _, child in ipairs(workspace.Terrain:GetChildren()) do
+		if child:IsA("Clouds") then child:Destroy() end
+	end
+
+	Lighting.TimeOfDay = "17:30:00"
+	Lighting.Brightness = 0.2
+	Lighting.Ambient = Color3.fromHex("FF6B2B")
+	Lighting.OutdoorAmbient = Color3.fromHex("FF8C42")
+	Lighting.ColorShift_Bottom = Color3.fromHex("FF3300")
+	Lighting.ColorShift_Top = Color3.fromHex("FFAA00")
+	Lighting.FogColor = Color3.fromHex("FF7043")
+	Lighting.FogEnd = 1500
+	Lighting.FogStart = 150
+
+	local sky = Instance.new("Sky")
+	sky.Name = "SunsetSky"
+	sky.SunAngularSize = 1
+	sky.Parent = Lighting
+
+	local atmosphere = Instance.new("Atmosphere")
+	atmosphere.Name = "SunsetAtmosphere"
+	atmosphere.Density = 0.25
+	atmosphere.Offset = 0.25
+	atmosphere.Color = Color3.fromHex("FF8C42")
+	atmosphere.Decay = Color3.fromHex("FF5522")
+	atmosphere.Glare = 2.0
+	atmosphere.Haze = 3.0
+	atmosphere.Parent = Lighting
+
+	local clouds = Instance.new("Clouds")
+	clouds.Name = "SunsetClouds"
+	clouds.Cover = 0.6
+	clouds.Density = 0.4
+	clouds.Color = Color3.fromHex("FFDAB3")
+	clouds.Parent = workspace.Terrain
+
+	local room = Assets.RoomModel:Clone()
+	room.Name = "RoomModel"
+	room:PivotTo(CFrame.new(GAME_ORIGIN))
+	room.Parent = currentTowerFolder
+	local base = Assets.BaseP1:Clone()
+	base.Position = GAME_ORIGIN + Vector3.new(0, 1, 0) 
+	base.Parent = currentTowerFolder
+
+	gameData.previousBlock = base
+	gameData.score = 0
+	gameData.blocksCount = 0
+	gameData.direction = "Z"
+	gameData.speed = (TurrisModule.Settings and TurrisModule.Settings.Speed) or 20
+	gameData.startTime = os.clock()
+	turnTimer = os.time()
+	COMBO_COUNTER = 0
+
+	createInGameHUD()
+
+	local Camera = workspace.CurrentCamera
+	cameraOriginalCFrame = Camera.CFrame
+	Camera.CameraType = Enum.CameraType.Scriptable
+	local camPos = GAME_ORIGIN + Vector3.new(10, 28, 10) 
+	local camLook = GAME_ORIGIN 
+	TweenService:Create(Camera, TweenInfo.new(1.5, Enum.EasingStyle.Exponential), {
+		CFrame = CFrame.lookAt(camPos, camLook)
+	}):Play()
+
+	task.delay(1.6, function()
+		if inGame then
+			SpawnNextBlock()
+			StartMovementLoop()
+		end
+	end)
+end
+
+local function animateTitle(title, titleShadow, icon)
+	local ti = TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+	TweenService:Create(title, ti, { TextColor3 = COLOR_TITLE_ALT }):Play()
+	TweenService:Create(titleShadow, ti, { TextColor3 = COLOR_TITLE_MAIN }):Play()
+	TweenService:Create(icon, ti, { Rotation = 10 }):Play()
+end
+
+createMenuGui = function()
+	if playerGui:FindFirstChild("TurrisArcadeMenu") then return end
+	setBlurEnabled(true, 56)
+	disablePlayerMovement()
+	currentMenuType = "Main"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TurrisArcadeMenu"
+	screenGui.ResetOnSpawn = false
+	local frame = Instance.new("Frame", screenGui)
+	frame.Size = UDim2.new(0.6, 0, 0.6, 0) -- Responsive
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = COLOR_BG
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+
+	local aspectRatio = Instance.new("UIAspectRatioConstraint", frame)
+	aspectRatio.AspectRatio = 400 / 320
+	local sizeLim = Instance.new("UISizeConstraint", frame)
+	sizeLim.MaxSize = Vector2.new(600, 480)
+
+	addGlassEffectToFrame(frame)
+
+	local titleContainer = Instance.new("Frame", frame)
+	titleContainer.Size = UDim2.new(1, 0, 0.25, 0)
+	titleContainer.Position = UDim2.new(0, 0, 0.03, 0)
+	titleContainer.BackgroundTransparency = 1
+	local titleLayout = Instance.new("UIListLayout", titleContainer)
+	titleLayout.FillDirection = Enum.FillDirection.Horizontal
+	titleLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	titleLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	titleLayout.Padding = UDim.new(0, 10)
+
+	local icon = createIcon(titleContainer, "cheese", 50, COLOR_TITLE_ALT)
+	icon.LayoutOrder = 1
+	local textGroup = Instance.new("Frame", titleContainer)
+	textGroup.Size = UDim2.new(0.6, 0, 1, 0)
+	textGroup.BackgroundTransparency = 1
+	textGroup.LayoutOrder = 2
+	local titleShadow = Instance.new("TextLabel", textGroup)
+	titleShadow.Size = UDim2.new(1, 0, 1, 0)
+	titleShadow.Position = UDim2.fromOffset(2, 2)
+	titleShadow.BackgroundTransparency = 1
+	titleShadow.Text = "TURRIS CASEI"
+	titleShadow.Font = Enum.Font.GothamBold
+	titleShadow.TextScaled = true
+	titleShadow.TextColor3 = COLOR_TITLE_ALT
+	titleShadow.ZIndex = frame.ZIndex + 2
+	local title = Instance.new("TextLabel", textGroup)
+	title.Size = UDim2.new(1, 0, 1, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "TURRIS CASEI"
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.ZIndex = frame.ZIndex + 3
+	animateTitle(title, titleShadow, icon)
+
+	local playBtn = createStyledButton(frame, "PLAY", UDim2.new(0.5, 0, 0.4, 0), UDim2.new(0.8, 0, 0.15, 0), COLOR_BTN_PLAY, "controller")
+	local vipBtn = createStyledButton(frame, "VIP", UDim2.new(0.5, 0, 0.6, 0), UDim2.new(0.8, 0, 0.15, 0), COLOR_BTN_BASE, "crown")
+	local exitBtn = createStyledButton(frame, "EXIT", UDim2.new(0.5, 0, 0.8, 0), UDim2.new(0.8, 0, 0.15, 0), COLOR_BTN_EXIT, "door")
+
+	local function onPlay() playSound(selectSound); screenGui:Destroy(); createPlayModeMenu() end
+	local function onVip() playSound(selectSound); screenGui:Destroy(); createDonateMenu() end
+	local function onExit() FullQuitGame() end
+
+	buttonActions[playBtn] = onPlay
+	buttonActions[vipBtn] = onVip
+	buttonActions[exitBtn] = onExit
+
+	playBtn.MouseButton1Click:Connect(onPlay)
+	vipBtn.MouseButton1Click:Connect(onVip)
+	exitBtn.MouseButton1Click:Connect(onExit)
+
+	table.insert(currentButtons, playBtn)
+	table.insert(currentButtons, vipBtn)
+	table.insert(currentButtons, exitBtn)
+	selectedButtonIndex = 1
+	updateSelectionVisuals()
+end
+
+createPlayModeMenu = function()
+	if playerGui:FindFirstChild("TurrisPlayModeMenu") then return end
+	setBlurEnabled(true, 56)
+	disablePlayerMovement()
+	currentMenuType = "PlayMode"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TurrisPlayModeMenu"
+	screenGui.ResetOnSpawn = false
+	local frame = Instance.new("Frame", screenGui)
+	frame.Size = UDim2.new(0.6, 0, 0.6, 0) -- Responsive
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = COLOR_BG
+
+	local aspectRatio = Instance.new("UIAspectRatioConstraint", frame)
+	aspectRatio.AspectRatio = 400 / 320
+	local sizeLim = Instance.new("UISizeConstraint", frame)
+	sizeLim.MaxSize = Vector2.new(600, 480)
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+	local title = Instance.new("TextLabel", frame)
+	title.Text = "SELECT MODE"
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.Size = UDim2.new(1,0,0.2,0)
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.new(0,0,0.03,0)
+
+	local soloBtn = createStyledButton(frame, "SOLO", UDim2.new(0.5,0,0.35,0), UDim2.new(0.6,0,0.15,0), COLOR_BTN_PLAY, "solo")
+	local versusBtn = createStyledButton(frame, "VERSUS", UDim2.new(0.5,0,0.55,0), UDim2.new(0.6,0,0.15,0), COLOR_BTN_BASE, "duo")
+	local backBtn = createStyledButton(frame, "BACK", UDim2.new(0.5,0,0.75,0), UDim2.new(0.6,0,0.15,0), COLOR_BTN_EXIT, "back")
+
+	local function onSolo()
+		playSound(selectSound)
+		screenGui:Destroy()
+		currentMenuType = nil 
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+
+		inGame = true
+		isVersusMode = false
+		disablePlayerMovement()
+		if StartRequest then pcall(function() StartRequest:FireServer("Solo") end) end
+		Setup3DGame()
+	end
+
+	local function onVersus()
+		playSound(selectSound)
+		screenGui:Destroy()
+		currentMenuType = nil 
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+
+		local success, LobbyClient = pcall(function()
+			return require(player.PlayerScripts:WaitForChild("TurrisCaseiLobbyClient"))
+		end)
+		if success and LobbyClient and LobbyClient.OpenMenu then
+			LobbyClient.OpenMenu()
+		else
+			warn("No se pudo cargar TurrisCaseiLobbyClient")
+		end
+	end
+
+	local function onBack()
+		ReturnToMainMenu()
+	end
+
+	buttonActions[soloBtn] = onSolo
+	buttonActions[versusBtn] = onVersus
+	buttonActions[backBtn] = onBack
+
+	soloBtn.MouseButton1Click:Connect(onSolo)
+	versusBtn.MouseButton1Click:Connect(onVersus)
+	backBtn.MouseButton1Click:Connect(onBack)
+
+	table.insert(currentButtons, soloBtn)
+	table.insert(currentButtons, versusBtn)
+	table.insert(currentButtons, backBtn)
+	selectedButtonIndex = 1
+	updateSelectionVisuals()
+end
+
+createDonateMenu = function()
+	if playerGui:FindFirstChild("TurrisDonateMenu") then return end
+	setBlurEnabled(true, 56)
+	disablePlayerMovement()
+	currentMenuType = "Donate"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TurrisDonateMenu"
+	screenGui.ResetOnSpawn = false
+	local frame = Instance.new("Frame", screenGui)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	frame.Size = UDim2.new(0.65, 0, 0.65, 0) -- Escala adaptable
+	frame.BackgroundColor3 = COLOR_BG
+
+	local aspectRatio = Instance.new("UIAspectRatioConstraint", frame)
+	aspectRatio.AspectRatio = 450 / 380
+	local sizeLim = Instance.new("UISizeConstraint", frame)
+	sizeLim.MaxSize = Vector2.new(675, 570)
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+	local title = Instance.new("TextLabel", frame)
+	title.Size = UDim2.new(1, 0, 0.13, 0)
+	title.Text = "TURRIS SUPPORT"
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.new(0, 0, 0.03, 0)
+	local gridContainer = Instance.new("Frame", frame)
+	gridContainer.Size = UDim2.new(0.9, 0, 0.65, 0)
+	gridContainer.Position = UDim2.new(0.5, 0, 0.18, 0)
+	gridContainer.AnchorPoint = Vector2.new(0.5, 0)
+	gridContainer.BackgroundTransparency = 1
+	local gridLayout = Instance.new("UIGridLayout", gridContainer)
+	gridLayout.CellSize = UDim2.new(0.48, 0, 0.28, 0)
+	gridLayout.CellPadding = UDim2.new(0.04, 0, 0.05, 0)
+	gridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+	for _, prod in ipairs(DONATION_PRODUCTS) do
+		local btnText = prod.Name .. "\n" .. prod.Price
+		local btn = createStyledButton(gridContainer, btnText, UDim2.new(), UDim2.new(), COLOR_BTN_BASE, nil)
+		btn:SetAttribute("ActionName", "DONATE_" .. prod.Id)
+
+		local function onBuy()
+			playSound(selectSound)
+			MarketplaceService:PromptProductPurchase(player, prod.Id)
+		end
+
+		buttonActions[btn] = onBuy
+		btn.MouseButton1Click:Connect(onBuy)
+		table.insert(currentButtons, btn)
+	end
+
+	local backBtn = createStyledButton(frame, "MENU", UDim2.new(0.5, 0, 0.90, 0), UDim2.new(0.8, 0, 0.1, 0), COLOR_BTN_EXIT, "door")
+	local function onBack() ReturnToMainMenu() end
+	buttonActions[backBtn] = onBack
+	backBtn.MouseButton1Click:Connect(onBack)
+	table.insert(currentButtons, backBtn)
+	selectedButtonIndex = 1
+	updateSelectionVisuals()
+end
+
+-- ==============================================
+-- 🏆 EVENTO ENDGAME PARA MODO SOLO 
+-- ==============================================
+endGame = function()
+	local finalTime = 0
+	if gameData.startTime > 0 then finalTime = os.clock() - gameData.startTime end
+	if MatchStatus then MatchStatus:FireServer("GameOver", gameData.score, finalTime) end
+	inGame = false
+
+	if hudGui then hudGui:Destroy() end
+	if versusGui then versusGui:Destroy() end
+
+	Cleanup3DGame()
+	playSound(gameOverSound)
+	setBlurEnabled(true, 56)
+	currentMenuType = "GameOver"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TurrisEndGui"
+	screenGui.ResetOnSpawn = false
+	screenGui.DisplayOrder = 99999 
+
+	local frame = Instance.new("Frame", screenGui)
+	frame.Size = UDim2.new(0.6, 0, 0.4, 0) 
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = COLOR_BG
+
+	local aspectRatio = Instance.new("UIAspectRatioConstraint", frame)
+	aspectRatio.AspectRatio = 400 / 250
+	local sizeLim = Instance.new("UISizeConstraint", frame)
+	sizeLim.MaxSize = Vector2.new(600, 375)
+
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+
+	local title = Instance.new("TextLabel", frame)
+	-- Para el modo SOLO dejamos solo "SCORE" porque siempre es tu propio puntaje
+	title.Text = "GAME OVER\nSCORE: " .. tostring(gameData.score)
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.Size = UDim2.new(1,0,0.35,0)
+	title.Position = UDim2.new(0,0,0.05,0)
+	title.BackgroundTransparency = 1
+
+	local menuBtn = createStyledButton(frame, "MENU", UDim2.new(0.28, 0, 0.75, 0), UDim2.new(0.4, 0, 0.22, 0), COLOR_BTN_BASE, "controller")
+	local exitBtn = createStyledButton(frame, "EXIT", UDim2.new(0.72, 0, 0.75, 0), UDim2.new(0.4, 0, 0.22, 0), COLOR_BTN_EXIT, "door")
+
+	local function onMenu()
+		playSound(selectSound)
+		destroyEndGui() 
+		createMenuGui()
+	end
+
+	local function onExit()
+		playSound(selectSound)
+		destroyEndGui() 
+		setBlurEnabled(false)
+		enablePlayerMovement()
+		currentMenuType = nil
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+		exitCurrentGame()
+	end
+
+	buttonActions[menuBtn] = onMenu
+	buttonActions[exitBtn] = onExit
+
+	menuBtn.MouseButton1Click:Connect(onMenu)
+	exitBtn.MouseButton1Click:Connect(onExit)
+
+	table.insert(currentButtons, menuBtn)
+	table.insert(currentButtons, exitBtn)
+
+	setupMenuNavigation("GameOver", {menuBtn, exitBtn})
+end
+
+-- ==============================================
+-- 🖱️ CONTROL DE CONTROLES: CLIC, TOQUE Y ESPACIO 
+-- ==============================================
+UserInputService.InputBegan:Connect(function(input, processed)
+	if input.KeyCode == Enum.KeyCode.Escape then
+		if currentMenuType == "Main" then
+			FullQuitGame()
+		elseif currentMenuType == "PlayMode" or currentMenuType == "Donate" then
+			ReturnToMainMenu()
+		elseif currentMenuType == "GameOver" then
+			FullQuitGame()
+		elseif inGame then
+			if isVersusMode then
+				local lobbyRemotes = ReplicatedStorage.ArcadeRemotes.TurrisCasei.LobbySystem
+				if lobbyRemotes then lobbyRemotes.LeaveRoom:FireServer() end
+				FullQuitGame()
+			else
+				FullQuitGame()
+			end
+		end
+		return
+	end
+
+	if inGame then
+		local isClickOrTouch = (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+		local isSpace = (input.KeyCode == Enum.KeyCode.Space)
+
+		if isClickOrTouch or isSpace then
+			if processed and isClickOrTouch then return end 
+			PlaceBlock()
+			return
+		end
+	end
+
+	if processed then return end
+
+	if currentMenuType and #currentButtons > 0 then
+		if input.KeyCode == Enum.KeyCode.W or input.KeyCode == Enum.KeyCode.Up or input.KeyCode == Enum.KeyCode.A or input.KeyCode == Enum.KeyCode.Left then
+			selectedButtonIndex = selectedButtonIndex - 1
+			if selectedButtonIndex < 1 then selectedButtonIndex = #currentButtons end
+			playSound(hoverSound);
+			updateSelectionVisuals()
+
+		elseif input.KeyCode == Enum.KeyCode.S or input.KeyCode == Enum.KeyCode.Down or input.KeyCode == Enum.KeyCode.D or input.KeyCode == Enum.KeyCode.Right then
+			selectedButtonIndex = selectedButtonIndex + 1
+			if selectedButtonIndex > #currentButtons then selectedButtonIndex = 1 end
+			playSound(hoverSound);
+			updateSelectionVisuals()
+
+		elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.KeypadEnter then
+			local btn = currentButtons[selectedButtonIndex]
+			if btn then
+				if buttonActions[btn] then
+					buttonActions[btn]()
+				else
+					HandleButtonAction(btn)
+				end
+			end
+		end
+	end
+end)
+
+if OpenArcadeMenu then
+	OpenArcadeMenu.OnClientEvent:Connect(function(gn)
+		if gn == "TurrisCasei" then
+			local lobbyOpen = playerGui:FindFirstChild("TurrisMultiplayerLobby") or playerGui:FindFirstChild("LobbyEntry")
+			if not inGame and not playerGui:FindFirstChild("TurrisArcadeMenu") and not lobbyOpen then
+				createMenuGui()
+			end
+		end
+	end)
+end
+
+if MatchStatus then
+	MatchStatus.OnClientEvent:Connect(function(status)
+		if status == "GameOver" and not isVersusMode then endGame() end
+	end)
+end
+
+cliente de otro jeugo donde funciona bien que al perder en solitrio me regresa donde estaba y al perder en versuss me muestra el menu y no me permite moverme : 
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local ContentProvider = game:GetService("ContentProvider")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local currentButtons = {}
+local selectedButtonIndex = 1
+local currentMenuType = nil 
+local buttonActions = {} 
+local soundEnabled = true 
+
+local hudGui = nil
+local hudScoreLabel = nil
+local hudMuteBtn = nil
+local versusGui = nil
+local waitingOverlay = nil
+
+local COLOR_BG = Color3.fromHex("fecdd3")
+local COLOR_BTN_BASE = Color3.fromHex("e11d48")
+local COLOR_BTN_PLAY = Color3.fromHex("fb7185")
+local COLOR_BTN_EXIT = Color3.fromHex("be123c")
+local COLOR_BTN_HOVER = Color3.fromHex("fda4af")
+local COLOR_UNDERLINE = Color3.fromHex("9f1239")
+local COLOR_TITLE_MAIN = Color3.fromHex("881337")
+local COLOR_TITLE_ALT = Color3.fromHex("f43f5e")
+local COLOR_LABEL_BUTTON = Color3.fromHex("fecdd3")
+local COLOR_HUD_MUTE_ON = Color3.fromHex("f43f5e")
+local COLOR_HUD_MUTE_OFF = Color3.fromHex("4c0519")
+local COLOR_HUD_EXIT = Color3.fromHex("e11d48")
+
+local HOVER_SOUND_ID = "rbxassetid://500472891"
+local SELECT_SOUND_ID = "rbxassetid://70844388753756"
+local GAMEOVER_SOUND_ID = "rbxassetid://5855421995"
+local JUMP_SOUND_ID = "rbxassetid://6895079853" 
+local PERFECT_SOUND_ID = "rbxassetid://500472891"
+local CHARGE_SOUND_ID = "rbxassetid://0" 
+
+local DONATION_PRODUCTS = {
+	{ Id = 3572911018, Price = 5,    Name = "Tap Tip" },
+	{ Id = 3572911230, Price = 15,   Name = "Tap Treat" },
+	{ Id = 3572911349, Price = 50,   Name = "Tap Sub" },
+	{ Id = 3572911440, Price = 100,  Name = "Tap Sponsor" },
+	{ Id = 3572911513, Price = 500,  Name = "Tap Whale" },
+	{ Id = 3474075594, Price = 1000, Name = "Tap Legend" },
+}
+
+local function createSound(id, volume)
+	if not id or id == "rbxassetid://0" then return nil end
+	local s = Instance.new("Sound")
+	s.SoundId = id
+	s.Volume = volume
+	s.Parent = script
+	return s
+end
+
+local hoverSound = createSound(HOVER_SOUND_ID, 0.4)
+local selectSound = createSound(SELECT_SOUND_ID, 0.5)
+local gameOverSound = createSound(GAMEOVER_SOUND_ID, 0.7)
+local jumpSound = createSound(JUMP_SOUND_ID, 0.8)
+local perfectSound = createSound(PERFECT_SOUND_ID, 1.0)
+local chargeSound = createSound(CHARGE_SOUND_ID, 0.3)
+
+local function playSound(s)
+	if not soundEnabled then return end
+	if s then s:Play() end
+end
+
+local function findRemotes()
+	local arc = ReplicatedStorage:WaitForChild("ArcadeRemotes", 10)
+	if not arc then return nil end
+	local tapFolder = arc:WaitForChild("TapAndHold", 10)
+	local OpenArcadeMenu = arc:WaitForChild("OpenArcadeMenu", 10)
+	if not tapFolder then return nil, nil, nil, OpenArcadeMenu end
+
+	local StartRequest = tapFolder:WaitForChild("StartTapAndHoldRequest", 5)
+	local MatchStatus = tapFolder:WaitForChild("MatchStatus", 5)
+	local ToggleAudio = tapFolder:FindFirstChild("ToggleAudio") 
+	local GetAudioState = tapFolder:FindFirstChild("GetAudioState")
+
+	local LobbySystem = tapFolder:FindFirstChild("LobbySystem")
+	local UpdateLiveScore, RoomUpdate, PlayerDiedEvent
+	if LobbySystem then
+		UpdateLiveScore = LobbySystem:WaitForChild("UpdateLiveScore", 5)
+		RoomUpdate = LobbySystem:WaitForChild("RoomUpdate", 5)
+		PlayerDiedEvent = LobbySystem:FindFirstChild("PlayerDied")
+	end
+
+	return StartRequest, MatchStatus, OpenArcadeMenu, ToggleAudio, GetAudioState, UpdateLiveScore, RoomUpdate, PlayerDiedEvent
+end
+
+local StartRequest, MatchStatus, OpenArcadeMenu, ToggleAudio, GetAudioState, UpdateLiveScore, RoomUpdate, PlayerDiedEvent = findRemotes()
+local Assets = ReplicatedStorage:WaitForChild("TapAndHold_Assets")
+
+local TapModule = require(ReplicatedStorage.Modules:WaitForChild("TapAndHoldModule"))
+
+task.spawn(function()
+	if GetAudioState then
+		local isMuted = GetAudioState:InvokeServer()
+		soundEnabled = not isMuted
+	end
+end)
+
+if ToggleAudio then
+	ToggleAudio.OnClientEvent:Connect(function(isEnabled)
+		soundEnabled = isEnabled
+		if hudMuteBtn then 
+			if soundEnabled then
+				hudMuteBtn.Text = "SOUND"
+				hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_ON
+			else
+				hudMuteBtn.Text = "MUTED"
+				hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_OFF
+			end
+		end
+	end)
+end
+
+local inGame = false
+local isVersusMode = false 
+local currentTowerFolder = nil
+
+-- Configuración de Escenario en Y=0 pero lejos de todo
+local GAME_ORIGIN = Vector3.new(50000, 0, 50000) 
+local WATER_OFFSET_Y = 15 
+local MAX_CHARGE_TIME = 1.2 
+local GLOBAL_TOP_Y = 0 
+
+local gameData = {
+	score = 0,
+	platforms = {},
+	targetPlatform = nil,
+	dummy = nil,
+	humanoid = nil, 
+	isCharging = false,
+	chargeStartTime = 0,
+	isJumping = false,
+	startTime = 0,
+	jumpConnection = nil,
+	originalCharacterCFrame = nil,
+	scaleTween = nil,
+	scaleConnection = nil,
+	scaleVal = nil,
+	startPromptText = nil,
+	rotationTween = nil
+}
+
+local originalLighting = {
+	TimeOfDay = Lighting.TimeOfDay,
+	Brightness = Lighting.Brightness,
+	Ambient = Lighting.Ambient,
+	OutdoorAmbient = Lighting.OutdoorAmbient,
+	ColorShift_Bottom = Lighting.ColorShift_Bottom,
+	ColorShift_Top = Lighting.ColorShift_Top,
+	FogColor = Lighting.FogColor,
+	FogEnd = Lighting.FogEnd,
+	FogStart = Lighting.FogStart,
+}
+
+local blurEffect = Lighting:FindFirstChild("TapMenuBlur") or Instance.new("BlurEffect", Lighting)
+blurEffect.Name = "TapMenuBlur"
+blurEffect.Enabled = false
+blurEffect.Size = 0
+
+local PlayerScripts = player:WaitForChild("PlayerScripts")
+local PlayerModule = require(PlayerScripts:WaitForChild("PlayerModule"))
+local ControlModule = PlayerModule:GetControls()
+
+local function setBlurEnabled(enabled, intensity)
+	local target = enabled and (intensity or 56) or 0
+	blurEffect.Enabled = true
+	TweenService:Create(blurEffect, TweenInfo.new(0.3), { Size = target }):Play()
+	if not enabled then task.delay(0.3, function() blurEffect.Enabled = false end) end
+end
+
+local function disablePlayerMovement() ControlModule:Disable() end
+local function enablePlayerMovement() ControlModule:Enable() end
+
+local function getCharacterLegOffset(charHumanoid, charHrp)
+	if charHumanoid.RigType == Enum.HumanoidRigType.R15 then
+		return (charHrp.Size.Y / 2) + charHumanoid.HipHeight
+	else
+		return (charHrp.Size.Y / 2) + 2 
+	end
+end
+
+local function addGlassEffectToFrame(targetFrame)
+	local glassOverlay = Instance.new("Frame", targetFrame)
+	glassOverlay.Name = "GlassEffectOverlay"
+	glassOverlay.Size = UDim2.new(1, 0, 1, 0)
+	glassOverlay.BackgroundTransparency = 1
+	glassOverlay.ZIndex = targetFrame.ZIndex + 1
+	local corner = Instance.new("UICorner", glassOverlay)
+	local existingCorner = targetFrame:FindFirstChildOfClass("UICorner")
+	corner.CornerRadius = existingCorner and existingCorner.CornerRadius or UDim.new(0, 10)
+	local uiStroke = Instance.new("UIStroke", glassOverlay)
+	uiStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	uiStroke.Color = COLOR_TITLE_MAIN 
+	uiStroke.Thickness = 1
+	uiStroke.Transparency = 0.5
+end
+
+local function createIcon(parent, iconType, size, color)
+	local l = Instance.new("TextLabel", parent)
+	l.Size = UDim2.fromOffset(size, size)
+	l.BackgroundTransparency = 1
+	l.TextScaled = true
+	l.TextColor3 = color or Color3.new(1, 1, 1)
+	l.Font = Enum.Font.SourceSans
+	local icons = { controller="🎮", crown="👑", door="🚪", jump="🚀", tap="🆙", solo="👤", duo="👥", back="⬅️" }
+	l.Text = icons[iconType] or ""
+	return l
+end
+
+local function highlightButton(button)
+	if not button then return end
+	local underline = button:FindFirstChild("Underline")
+	local originalSize = button:GetAttribute("OriginalSize")
+	local originalColor = button:GetAttribute("OriginalColor")
+	if not originalSize then return end
+	local hoverSize = UDim2.new(originalSize.X.Scale * 1.1, originalSize.X.Offset, originalSize.Y.Scale * 1.1, originalSize.Y.Offset)
+	local targetColor = button.BackgroundColor3
+	if originalColor then targetColor = originalColor:Lerp(Color3.new(1, 1, 1), 0.3) end
+	TweenService:Create(button, TweenInfo.new(0.2), { Size = hoverSize, BackgroundColor3 = targetColor }):Play()
+	if underline then TweenService:Create(underline, TweenInfo.new(0.3), { Size = UDim2.new(1, 0, 0, 3) }):Play() end
+end
+
+local function unhighlightButton(button)
+	if not button then return end
+	local underline = button:FindFirstChild("Underline")
+	local originalSize = button:GetAttribute("OriginalSize")
+	local originalColor = button:GetAttribute("OriginalColor")
+	if not originalSize then return end
+	local targetColor = originalColor or button.BackgroundColor3
+	TweenService:Create(button, TweenInfo.new(0.2), { Size = originalSize, BackgroundColor3 = targetColor }):Play()
+	if underline then TweenService:Create(underline, TweenInfo.new(0.2), { Size = UDim2.new(0, 0, 0, 3) }):Play() end
+end
+
+local function updateSelectionVisuals()
+	for i, btn in ipairs(currentButtons) do
+		if i == selectedButtonIndex then highlightButton(btn) else unhighlightButton(btn) end
+	end
+end
+
+local function setupStyledButtonBehavior(button)
+	button:SetAttribute("OriginalSize", button.Size)
+	button:SetAttribute("OriginalColor", button.BackgroundColor3)
+	local underline = Instance.new("Frame", button)
+	underline.Name = "Underline"
+	underline.Size = UDim2.new(0, 0, 0, 3)
+	underline.Position = UDim2.new(0.5, 0, 1, 0)
+	underline.AnchorPoint = Vector2.new(0.5, 1)
+	underline.BackgroundColor3 = COLOR_UNDERLINE
+	underline.BorderSizePixel = 0
+	underline.ZIndex = button.ZIndex + 3
+	button.MouseEnter:Connect(function()
+		for i, btn in ipairs(currentButtons) do
+			if btn == button then
+				if selectedButtonIndex ~= i then playSound(hoverSound) end
+				selectedButtonIndex = i
+				updateSelectionVisuals()
+				break
+			end
+		end
+	end)
+end
+
+local function createStyledButton(parent, text, position, size, colorHex, iconType)
+	local button = Instance.new("TextButton", parent)
+	button.Position = position
+	button.Size = size
+	button.BackgroundColor3 = typeof(colorHex) == "Color3" and colorHex or (colorHex and Color3.fromHex(colorHex) or COLOR_BTN_BASE)
+	button.Text = ""
+	button.BorderSizePixel = 0
+	button.AnchorPoint = Vector2.new(0.5, 0.5)
+	button.AutoButtonColor = false
+	button:SetAttribute("ActionName", text)
+
+	local corner = Instance.new("UICorner", button)
+	corner.CornerRadius = UDim.new(0, 10)
+	addGlassEffectToFrame(button)
+	local content = Instance.new("Frame", button)
+	content.Size = UDim2.new(1, 0, 1, 0)
+	content.BackgroundTransparency = 1
+	content.ZIndex = button.ZIndex + 2
+	local listLayout = Instance.new("UIListLayout", content)
+	listLayout.FillDirection = Enum.FillDirection.Horizontal
+	listLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	listLayout.Padding = UDim.new(0, 10)
+
+	if iconType then 
+		local icon = createIcon(content, iconType, 30, COLOR_LABEL_BUTTON) 
+		icon.LayoutOrder = 1 
+	end
+	local label = Instance.new("TextLabel", content)
+	label.Size = UDim2.new(iconType and 0.6 or 0.9, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextScaled = true
+	label.TextColor3 = COLOR_LABEL_BUTTON
+	label.Font = Enum.Font.GothamBold
+	label.TextXAlignment = Enum.TextXAlignment.Center
+	label.LayoutOrder = 2
+	setupStyledButtonBehavior(button)
+	return button
+end
+
+local function destroyAllMenus()
+	local names = {"TapArcadeMenu", "TapPlayModeMenu", "TapDonateMenu", "TapEndGui", "TapHUD", "VersusHUD", "WaitingOverlay"}
+	for _, n in ipairs(names) do
+		if playerGui:FindFirstChild(n) then playerGui[n]:Destroy() end
+	end
+end
+
+local createMenuGui
+local createPlayModeMenu
+local createDonateMenu
+local endGame
+local Setup3DGame
+
+local function UpdateCamera()
+	if not inGame or not gameData.dummy then return end
+	local cam = workspace.CurrentCamera
+	local targetPlatform = gameData.targetPlatform
+
+	local lookPos = gameData.dummy.Position
+	if targetPlatform then
+		lookPos = gameData.dummy.Position:Lerp(targetPlatform.Position, 0.5)
+	end
+
+	local offset = Vector3.new(-15, 15, -15)
+	local targetCFrame = CFrame.lookAt(gameData.dummy.Position + offset, lookPos)
+	TweenService:Create(cam, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = targetCFrame}):Play()
+
+	if currentTowerFolder then
+		local floor = currentTowerFolder:FindFirstChild("FloorModel")
+		if floor then
+			floor:PivotTo(floor:GetPivot().Rotation + Vector3.new(gameData.dummy.Position.X, GAME_ORIGIN.Y - WATER_OFFSET_Y, gameData.dummy.Position.Z))
+		end
+	end
+end
+
+local function SpawnNextPlatform()
+	if not inGame then return end
+
+	local pData = TapModule.PickNextPlatformData()
+	local modelName = pData.ModelName
+
+	local prevPlatform = gameData.platforms[#gameData.platforms]
+	local prevPos = prevPlatform.Position
+
+	local distance = math.random(TapModule.Settings.MinDistance, TapModule.Settings.MaxDistance)
+
+	local axis = (math.random() > 0.5) and Vector3.new(1, 0, 0) or Vector3.new(0, 0, 1)
+
+	local template = Assets:FindFirstChild(modelName)
+	if not template then return end
+
+	local newPlatform = template:Clone()
+	newPlatform.Anchored = true 
+
+	local newY = GLOBAL_TOP_Y - (newPlatform.Size.Y / 2)
+	local targetXZ = prevPos + (axis * distance)
+	local spawnPos = Vector3.new(targetXZ.X, newY, targetXZ.Z)
+
+	newPlatform.CFrame = CFrame.new(spawnPos)
+	newPlatform:SetAttribute("PlatformType", pData.Type)
+	newPlatform:SetAttribute("PlatformValue", pData.Value)
+
+	TapModule.ApplyRoseGradient(newPlatform, pData.Color)
+	newPlatform.Parent = currentTowerFolder
+
+	table.insert(gameData.platforms, newPlatform)
+	gameData.targetPlatform = newPlatform
+
+	if #gameData.platforms > TapModule.Settings.MaxVisiblePlatforms then
+		local old = table.remove(gameData.platforms, 1)
+		if old then old:Destroy() end
+	end
+
+	local startY = newPlatform.Position.Y
+	newPlatform.Position = newPlatform.Position - Vector3.new(0, 10, 0)
+	TweenService:Create(newPlatform, TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Position = Vector3.new(newPlatform.Position.X, startY, newPlatform.Position.Z)
+	}):Play()
+
+	local lookTarget = Vector3.new(spawnPos.X, gameData.dummy.Position.Y, spawnPos.Z)
+	local playerTargetCFrame = CFrame.lookAt(gameData.dummy.Position, lookTarget)
+	gameData.rotationTween = TweenService:Create(gameData.dummy, TweenInfo.new(0.25), {CFrame = playerTargetCFrame})
+	gameData.rotationTween:Play()
+
+	UpdateCamera()
+end
+
+local function ShowBonusText(pos, text, color)
+	local billboard = Instance.new("BillboardGui")
+	billboard.Size = UDim2.fromScale(4, 2)
+	billboard.AlwaysOnTop = true
+	local lbl = Instance.new("TextLabel", billboard)
+	lbl.Size = UDim2.fromScale(1,1)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.TextColor3 = color
+	lbl.Font = Enum.Font.GothamBlack
+	lbl.TextScaled = true
+	local stroke = Instance.new("UIStroke", lbl)
+	stroke.Thickness = 2
+	local part = Instance.new("Part")
+	part.Anchored = true
+	part.CanCollide = false
+	part.Transparency = 1
+	part.Position = pos
+	part.Parent = workspace
+	billboard.Adornee = part
+	billboard.Parent = playerGui
+	TweenService:Create(part, TweenInfo.new(1), {Position = pos + Vector3.new(0, 5, 0)}):Play()
+	Debris:AddItem(part, 1)
+	Debris:AddItem(billboard, 1)
+end
+
+local function SpawnParticleBurst(pos, isPerfect)
+	local att = Instance.new("Attachment")
+	att.Parent = workspace.Terrain
+	att.WorldPosition = pos
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Texture = "rbxassetid://1266170131"
+	emitter.Color = isPerfect and ColorSequence.new(Color3.new(1,1,0)) or ColorSequence.new(Color3.new(1,1,1))
+	emitter.Size = NumberSequence.new(1, 0)
+	emitter.Lifetime = NumberRange.new(0.5, 0.8)
+	emitter.Speed = NumberRange.new(15, 25)
+	emitter.SpreadAngle = Vector2.new(360, 360)
+	emitter.Rate = 0
+	emitter.Parent = att
+	emitter:Emit(isPerfect and 30 or 10)
+	Debris:AddItem(att, 2)
+end
+
+local function checkLandingTolerant(finalPos, platform)
+	local isInside, isPerfect = TapModule.CheckLanding(finalPos, platform)
+	if not isInside then
+		local pSize = platform.Size
+		local pPos = platform.Position
+		local diffX = math.abs(finalPos.X - pPos.X)
+		local diffZ = math.abs(finalPos.Z - pPos.Z)
+		if diffX < (pSize.X / 2 + 1.5) and diffZ < (pSize.Z / 2 + 1.5) then
+			isInside = true
+			isPerfect = false
+		end
+	end
+	return isInside, isPerfect
+end
+
+local function HandleLanding(finalPos)
+	local platform = gameData.targetPlatform
+	local isInside, isPerfect = checkLandingTolerant(finalPos, platform)
+
+	local trail = gameData.dummy:FindFirstChild("JumpTrail")
+	if trail then trail.Enabled = false end
+
+	if isInside then
+		if isPerfect then
+			playSound(perfectSound)
+			gameData.score = gameData.score + 3
+			ShowBonusText(finalPos, "PERFECT!\n+3", Color3.new(1,1,0))
+			SpawnParticleBurst(finalPos, true)
+		else
+			playSound(jumpSound)
+			gameData.score = gameData.score + 1
+			SpawnParticleBurst(finalPos, false)
+		end
+
+		local type = platform:GetAttribute("PlatformType")
+		local val = platform:GetAttribute("PlatformValue") or 0
+		if type == "Bonus" then
+			gameData.score = gameData.score + val
+			ShowBonusText(finalPos + Vector3.new(0,2,0), "+"..val.." BONUS!", TapModule.Settings.Colors.Bonus)
+		elseif type == "Penalty" then
+			gameData.score = math.max(0, gameData.score + val)
+			ShowBonusText(finalPos + Vector3.new(0,2,0), val.." PENALTY", TapModule.Settings.Colors.Penalty)
+		end
+
+		if hudScoreLabel then hudScoreLabel.Text = "SCORE: " .. tostring(gameData.score) end
+		if isVersusMode and UpdateLiveScore then UpdateLiveScore:FireServer(gameData.score) end
+
+		SpawnNextPlatform()
+	else
+		gameData.dummy.Anchored = false
+		playSound(gameOverSound)
+
+		task.wait(1.5)
+		if isVersusMode then
+			inGame = false 
+			if MatchStatus then MatchStatus:FireServer("GameOver", gameData.score, 0) end
+			if PlayerDiedEvent then PlayerDiedEvent:FireServer() end
+
+			if waitingOverlay then waitingOverlay:Destroy() end
+			local gui = Instance.new("ScreenGui", playerGui)
+			gui.Name = "WaitingOverlay"
+			local f = Instance.new("Frame", gui)
+			f.Size = UDim2.fromOffset(400, 150)
+			f.Position = UDim2.fromScale(0.5, 0.5)
+			f.AnchorPoint = Vector2.new(0.5, 0.5)
+			f.BackgroundColor3 = Color3.new(0,0,0)
+			f.BackgroundTransparency = 0.5
+			local lbl = Instance.new("TextLabel", f)
+			lbl.Size = UDim2.fromScale(1, 1)
+			lbl.BackgroundTransparency = 1
+			lbl.Text = "YOU DIED!\nWaiting for winner..."
+			lbl.Font = Enum.Font.GothamBlack
+			lbl.TextColor3 = Color3.new(1,0,0)
+			lbl.TextScaled = true
+			waitingOverlay = gui
+		else
+			endGame()
+		end
+	end
+end
+
+local function StartCharge()
+	if not inGame or gameData.isJumping or gameData.isCharging then return end
+
+	if gameData.rotationTween then
+		gameData.rotationTween:Cancel()
+		if gameData.targetPlatform then
+			local lookTarget = Vector3.new(gameData.targetPlatform.Position.X, gameData.dummy.Position.Y, gameData.targetPlatform.Position.Z)
+			gameData.dummy.CFrame = CFrame.lookAt(gameData.dummy.Position, lookTarget)
+		end
+	end
+
+	gameData.isCharging = true
+	gameData.chargeStartTime = tick()
+
+	if gameData.startPromptText then
+		gameData.startPromptText:Destroy()
+		gameData.startPromptText = nil
+	end
+
+	if chargeSound then chargeSound:Play() end
+
+	local emitter = gameData.dummy:FindFirstChild("ChargeEmitter", true)
+	if emitter then emitter.Enabled = true end
+
+	if gameData.scaleTween then gameData.scaleTween:Cancel() end
+	gameData.scaleVal = Instance.new("NumberValue")
+	gameData.scaleVal.Value = 1 
+
+	gameData.scaleConnection = gameData.scaleVal.Changed:Connect(function()
+		if player.Character then
+			player.Character:ScaleTo(gameData.scaleVal.Value)
+		end
+	end)
+
+	gameData.scaleTween = TweenService:Create(gameData.scaleVal, TweenInfo.new(MAX_CHARGE_TIME, Enum.EasingStyle.Linear), {Value = 0.6})
+	gameData.scaleTween:Play()
+end
+
+local function ReleaseCharge()
+	if not inGame or not gameData.isCharging then return end
+	gameData.isCharging = false
+	gameData.isJumping = true
+
+	if chargeSound then chargeSound:Stop() end
+
+	local emitter = gameData.dummy:FindFirstChild("ChargeEmitter", true)
+	if emitter then emitter.Enabled = false end
+
+	if gameData.scaleTween then gameData.scaleTween:Cancel() end
+	if gameData.scaleConnection then gameData.scaleConnection:Disconnect() end
+	if gameData.scaleVal then gameData.scaleVal:Destroy() end
+	if player.Character then player.Character:ScaleTo(1) end
+
+	local holdTime = tick() - gameData.chargeStartTime
+	holdTime = math.min(holdTime, MAX_CHARGE_TIME) 
+
+	local vForward, vUp = TapModule.CalculateJumpVelocity(holdTime)
+	local gravity = TapModule.Settings.Gravity
+
+	local startPos = gameData.dummy.Position
+	local timeInAir = 0
+
+	local forwardDir = gameData.dummy.CFrame.LookVector
+
+	local trail = gameData.dummy:FindFirstChild("JumpTrail")
+	if trail then trail.Enabled = true end
+
+	local legOffset = getCharacterLegOffset(gameData.humanoid, gameData.dummy)
+	local perfectLandingY = GLOBAL_TOP_Y + legOffset
+
+	if gameData.humanoid then
+		gameData.humanoid:ChangeState(Enum.HumanoidStateType.PlatformStanding)
+	end
+
+	gameData.jumpConnection = RunService.RenderStepped:Connect(function(dt)
+		timeInAir = timeInAir + dt
+
+		local currentXZ = forwardDir * (vForward * timeInAir)
+		local currentY = (vUp * timeInAir) - (0.5 * gravity * timeInAir^2)
+
+		local newPos = startPos + currentXZ + Vector3.new(0, currentY, 0)
+		gameData.dummy.CFrame = gameData.dummy.CFrame.Rotation + newPos
+
+		UpdateCamera()
+
+		if currentY < 0 and newPos.Y <= perfectLandingY then
+			gameData.jumpConnection:Disconnect()
+			gameData.jumpConnection = nil
+
+			gameData.dummy.CFrame = gameData.dummy.CFrame.Rotation + Vector3.new(newPos.X, perfectLandingY, newPos.Z)
+			gameData.isJumping = false
+
+			if gameData.humanoid then
+				gameData.humanoid:ChangeState(Enum.HumanoidStateType.Landed)
+			end
+
+			HandleLanding(gameData.dummy.Position)
+		elseif newPos.Y < GAME_ORIGIN.Y - 50 then
+			gameData.jumpConnection:Disconnect()
+			gameData.isJumping = false
+			HandleLanding(newPos) 
+		end
+	end)
+end
+
+local function Cleanup3DGame()
+	if gameData.jumpConnection then gameData.jumpConnection:Disconnect() end
+	if currentTowerFolder then currentTowerFolder:Destroy() end
+
+	if hudGui then hudGui:Destroy() hudGui = nil end
+	if versusGui then versusGui:Destroy() versusGui = nil end
+	if waitingOverlay then waitingOverlay:Destroy() waitingOverlay = nil end
+
+	if gameData.startPromptText then
+		gameData.startPromptText:Destroy()
+		gameData.startPromptText = nil
+	end
+
+	if not isVersusMode then
+		local cam = workspace.CurrentCamera
+		cam.CameraType = Enum.CameraType.Custom
+		cam.FieldOfView = 70
+	end
+
+	if gameData.dummy then
+		local emitter = gameData.dummy:FindFirstChild("ChargeEmitter", true)
+		if emitter then emitter.Enabled = false end
+	end
+
+	local character = player.Character
+	if character and gameData.originalCharacterCFrame then
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		if hrp then
+			hrp.Anchored = false
+			hrp.Velocity = Vector3.new(0, 0, 0)
+		end
+		character:ScaleTo(1)
+		character:PivotTo(gameData.originalCharacterCFrame)
+		gameData.originalCharacterCFrame = nil
+	end
+
+	Lighting.TimeOfDay = originalLighting.TimeOfDay
+	Lighting.Brightness = originalLighting.Brightness
+	Lighting.Ambient = originalLighting.Ambient
+	Lighting.OutdoorAmbient = originalLighting.OutdoorAmbient
+	Lighting.ColorShift_Bottom = originalLighting.ColorShift_Bottom
+	Lighting.ColorShift_Top = originalLighting.ColorShift_Top
+	Lighting.FogColor = originalLighting.FogColor
+	Lighting.FogEnd = originalLighting.FogEnd
+	Lighting.FogStart = originalLighting.FogStart
+
+	local customAtmo = Lighting:FindFirstChild("SunsetAtmosphere")
+	if customAtmo then customAtmo:Destroy() end
+	local customSky = Lighting:FindFirstChild("SunsetSky")
+	if customSky then customSky:Destroy() end
+	local customClouds = workspace.Terrain:FindFirstChild("SunsetClouds")
+	if customClouds then customClouds:Destroy() end
+end
+
+local function FullQuitGame()
+	playSound(selectSound)
+	inGame = false
+	isVersusMode = false
+	currentMenuType = nil
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+	destroyAllMenus() 
+	Cleanup3DGame()
+	setBlurEnabled(false)
+	enablePlayerMovement() 
+end
+
+local function ReturnToMainMenu()
+	playSound(selectSound)
+	inGame = false
+	isVersusMode = false
+	currentMenuType = nil
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+	destroyAllMenus()
+	Cleanup3DGame()
+	createMenuGui() 
+end
+
+local function createVersusHUD()
+	if playerGui:FindFirstChild("VersusHUD") then playerGui.VersusHUD:Destroy() end
+	local gui = Instance.new("ScreenGui", playerGui)
+	gui.Name = "VersusHUD"
+	local barBg = Instance.new("Frame", gui)
+	barBg.Size = UDim2.new(0, 30, 0.6, 0)
+	barBg.Position = UDim2.new(0.95, 0, 0.2, 0)
+	barBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+	barBg.BorderSizePixel = 0
+	Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+	local fill = Instance.new("Frame", barBg)
+	fill.Name = "Fill"
+	fill.Size = UDim2.new(1, 0, 1, 0) 
+	fill.BackgroundTransparency = 1
+	versusGui = gui
+end
+
+local function updateVersusHUD(playerList)
+	if not versusGui then return end
+	local fill = versusGui:FindFirstChild("Frame"):FindFirstChild("Fill")
+	if not fill then return end
+	for _, c in ipairs(fill:GetChildren()) do if c:IsA("ImageLabel") then c:Destroy() end end
+	for _, pData in ipairs(playerList) do
+		local score = pData.Score or 0
+		local percent = math.clamp(score / 50, 0, 1)
+
+		local icon = Instance.new("ImageLabel", fill)
+		icon.Size = UDim2.fromOffset(40, 40)
+		icon.Position = UDim2.new(0.5, 0, 1 - percent, 0)
+		icon.AnchorPoint = Vector2.new(0.5, 0.5)
+		icon.BackgroundTransparency = 1 
+		icon.ZIndex = 5 
+		icon.Image = "rbxthumb://type=AvatarHeadShot&id=" .. tostring(pData.Id) .. "&w=150&h=150"
+		Instance.new("UICorner", icon).CornerRadius = UDim.new(1, 0)
+
+		if not pData.Alive then
+			icon.ImageColor3 = Color3.new(0.2, 0.2, 0.2)
+			local x = Instance.new("TextLabel", icon)
+			x.Size = UDim2.fromScale(1,1)
+			x.BackgroundTransparency = 1
+			x.Text = "❌"
+			x.TextSize = 25
+			x.ZIndex = 6
+		end
+
+		if pData.Name == player.Name then
+			local s = Instance.new("UIStroke", icon)
+			s.Thickness = 2
+			s.Color = Color3.new(1,1,0)
+		end
+	end
+end
+
+if RoomUpdate then
+	RoomUpdate.OnClientEvent:Connect(function(type, data)
+		if type == "ScoreUpdate" and inGame and isVersusMode then
+			updateVersusHUD(data)
+		elseif type == "StartGame" then
+			FullQuitGame()
+			task.wait(0.1)
+			inGame = true
+			isVersusMode = true
+			disablePlayerMovement()
+			Setup3DGame()
+			createVersusHUD()
+		elseif type == "MatchEnded" then
+			playSound(gameOverSound)
+			inGame = false
+			isVersusMode = false
+			Cleanup3DGame() 
+			local cam = workspace.CurrentCamera
+			cam.CameraType = Enum.CameraType.Custom
+			cam.FieldOfView = 70
+			enablePlayerMovement()
+		end
+	end)
+end
+
+local function createInGameHUD()
+	if playerGui:FindFirstChild("TapHUD") then playerGui.TapHUD:Destroy() end
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TapHUD"
+	screenGui.ResetOnSpawn = false
+
+	local scoreFrame = Instance.new("Frame", screenGui)
+	scoreFrame.Size = UDim2.fromOffset(160, 45)
+	scoreFrame.Position = UDim2.new(0, 20, 0, 20)
+	scoreFrame.BackgroundColor3 = COLOR_BTN_BASE
+	Instance.new("UICorner", scoreFrame).CornerRadius = UDim.new(0, 8)
+	addGlassEffectToFrame(scoreFrame)
+
+	hudScoreLabel = Instance.new("TextLabel", scoreFrame)
+	hudScoreLabel.Size = UDim2.new(1,0,1,0)
+	hudScoreLabel.BackgroundTransparency = 1
+	hudScoreLabel.Text = "SCORE: 0"
+	hudScoreLabel.Font = Enum.Font.GothamBlack
+	hudScoreLabel.TextColor3 = Color3.new(1,1,1)
+	hudScoreLabel.TextSize = 22
+
+	local btnContainer = Instance.new("Frame", screenGui)
+	btnContainer.Size = UDim2.fromOffset(180, 45) 
+	btnContainer.Position = UDim2.new(1, -200, 0, 20)
+	btnContainer.BackgroundTransparency = 1
+	local list = Instance.new("UIListLayout", btnContainer)
+	list.FillDirection = Enum.FillDirection.Horizontal
+	list.Padding = UDim.new(0, 10)
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Right
+
+	hudMuteBtn = Instance.new("TextButton", btnContainer)
+	hudMuteBtn.Size = UDim2.fromOffset(80,45)
+	hudMuteBtn.TextSize = 16
+	hudMuteBtn.Font = Enum.Font.GothamBold
+	hudMuteBtn.TextColor3 = Color3.new(1,1,1)
+	Instance.new("UICorner", hudMuteBtn).CornerRadius = UDim.new(0,8)
+	addGlassEffectToFrame(hudMuteBtn)
+
+	local function updateMuteVisuals()
+		if soundEnabled then
+			hudMuteBtn.Text = "SOUND"
+			hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_ON
+		else
+			hudMuteBtn.Text = "MUTED"
+			hudMuteBtn.BackgroundColor3 = COLOR_HUD_MUTE_OFF
+		end
+	end
+	updateMuteVisuals()
+	hudMuteBtn.MouseButton1Click:Connect(function()
+		soundEnabled = not soundEnabled
+		updateMuteVisuals()
+		if ToggleAudio then ToggleAudio:FireServer(soundEnabled) end
+	end)
+
+	local exitBtn = Instance.new("TextButton", btnContainer)
+	exitBtn.Size = UDim2.fromOffset(70,45)
+	exitBtn.BackgroundColor3 = COLOR_HUD_EXIT
+	exitBtn.Text = "EXIT"
+	exitBtn.TextSize = 16
+	exitBtn.Font = Enum.Font.GothamBold
+	exitBtn.TextColor3 = Color3.new(1,1,1)
+	Instance.new("UICorner", exitBtn).CornerRadius = UDim.new(0,8)
+	addGlassEffectToFrame(exitBtn)
+	exitBtn.MouseButton1Click:Connect(function() 
+		if isVersusMode then
+			local lobbyRemotes = ReplicatedStorage.ArcadeRemotes.TapAndHold.LobbySystem
+			if lobbyRemotes then lobbyRemotes.LeaveRoom:FireServer() end
+		end
+		FullQuitGame()
+	end)
+	hudGui = screenGui
+end
+
+Setup3DGame = function()
+	setBlurEnabled(false)
+	if currentTowerFolder then currentTowerFolder:Destroy() end
+	currentTowerFolder = Instance.new("Folder")
+	currentTowerFolder.Name = "Local_TapAndHold_Game"
+	currentTowerFolder.Parent = workspace
+
+	if not Assets:FindFirstChild("Model") or not Assets:FindFirstChild("tapsuelo1") then
+		return
+	end
+
+	originalLighting.TimeOfDay = Lighting.TimeOfDay
+	originalLighting.Brightness = Lighting.Brightness
+	originalLighting.Ambient = Lighting.Ambient
+	originalLighting.OutdoorAmbient = Lighting.OutdoorAmbient
+	originalLighting.ColorShift_Bottom = Lighting.ColorShift_Bottom
+	originalLighting.ColorShift_Top = Lighting.ColorShift_Top
+	originalLighting.FogColor = Lighting.FogColor
+	originalLighting.FogEnd = Lighting.FogEnd
+	originalLighting.FogStart = Lighting.FogStart
+
+	for _, child in ipairs(Lighting:GetChildren()) do
+		if child:IsA("Sky") or child:IsA("Atmosphere") then
+			child:Destroy()
+		end
+	end
+	for _, child in ipairs(workspace.Terrain:GetChildren()) do
+		if child:IsA("Clouds") then
+			child:Destroy()
+		end
+	end
+
+	Lighting.TimeOfDay = "17:30:00"
+	Lighting.Brightness = 0.2
+	Lighting.Ambient = Color3.fromHex("FF6B2B")
+	Lighting.OutdoorAmbient = Color3.fromHex("FF8C42")
+	Lighting.ColorShift_Bottom = Color3.fromHex("FF3300")
+	Lighting.ColorShift_Top = Color3.fromHex("FFAA00")
+	Lighting.FogColor = Color3.fromHex("FF7043")
+	Lighting.FogEnd = 1500
+	Lighting.FogStart = 150
+
+	local sky = Instance.new("Sky")
+	sky.Name = "SunsetSky"
+	sky.SunAngularSize = 1
+	sky.Parent = Lighting
+
+	local atmosphere = Instance.new("Atmosphere")
+	atmosphere.Name = "SunsetAtmosphere"
+	atmosphere.Density = 0.25
+	atmosphere.Offset = 0.25
+	atmosphere.Color = Color3.fromHex("FF8C42")
+	atmosphere.Decay = Color3.fromHex("FF5522")
+	atmosphere.Glare = 2.0
+	atmosphere.Haze = 3.0
+	atmosphere.Parent = Lighting
+
+	local clouds = Instance.new("Clouds")
+	clouds.Name = "SunsetClouds"
+	clouds.Cover = 0.6
+	clouds.Density = 0.4
+	clouds.Color = Color3.fromHex("FFDAB3")
+	clouds.Parent = workspace.Terrain
+
+	local room = Assets.Model:Clone()
+	room.Name = "FloorModel"
+	room:PivotTo(CFrame.new(GAME_ORIGIN - Vector3.new(0, WATER_OFFSET_Y, 0)))
+	room.Parent = currentTowerFolder
+
+	local base = Assets.tapsuelo1:Clone()
+	base.Anchored = true 
+	base.Position = GAME_ORIGIN + Vector3.new(0, 1, 0) 
+
+	GLOBAL_TOP_Y = base.Position.Y + (base.Size.Y / 2)
+
+	TapModule.ApplyRoseGradient(base, TapModule.Settings.Colors.Normal)
+	base.Parent = currentTowerFolder
+
+	local character = player.Character or player.CharacterAdded:Wait()
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+	if hrp and humanoid then
+		if not gameData.originalCharacterCFrame then
+			gameData.originalCharacterCFrame = character:GetPivot()
+		end
+
+		hrp.Anchored = true 
+		hrp.Velocity = Vector3.new(0,0,0)
+
+		local legOffset = getCharacterLegOffset(humanoid, hrp)
+
+		local spawnPos = Vector3.new(base.Position.X, GLOBAL_TOP_Y + legOffset, base.Position.Z)
+
+		local lookForward = spawnPos + Vector3.new(0, 0, 1)
+		character:PivotTo(CFrame.lookAt(spawnPos, lookForward))
+
+		gameData.dummy = hrp 
+		gameData.humanoid = humanoid
+
+		if not hrp:FindFirstChild("JumpTrail") then
+			local a0 = Instance.new("Attachment", hrp)
+			a0.Name = "TrailAtt0"
+			a0.Position = Vector3.new(0, hrp.Size.Y/2, 0)
+			local a1 = Instance.new("Attachment", hrp)
+			a1.Name = "TrailAtt1"
+			a1.Position = Vector3.new(0, -hrp.Size.Y/2, 0)
+
+			local trail = Instance.new("Trail", hrp)
+			trail.Name = "JumpTrail"
+			trail.Attachment0 = a0
+			trail.Attachment1 = a1
+			trail.Color = ColorSequence.new(COLOR_BTN_PLAY)
+			trail.Lifetime = 0.5
+			trail.Enabled = false
+		end
+
+		if not hrp:FindFirstChild("ChargeEmitter", true) then
+			local chargeAtt = Instance.new("Attachment", hrp)
+			chargeAtt.Name = "ChargeAtt"
+			local chargeEmitter = Instance.new("ParticleEmitter", chargeAtt)
+			chargeEmitter.Name = "ChargeEmitter"
+			chargeEmitter.Texture = "rbxassetid://2842055173" 
+			chargeEmitter.Color = ColorSequence.new(Color3.new(1, 1, 1))
+			chargeEmitter.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.5, 0.4), NumberSequenceKeypoint.new(1, 0)})
+			chargeEmitter.Lifetime = NumberRange.new(0.3, 0.5)
+			chargeEmitter.Rate = 60
+			chargeEmitter.Speed = NumberRange.new(-15, -10) 
+			chargeEmitter.Shape = Enum.ParticleEmitterShape.Sphere
+			chargeEmitter.ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume
+			chargeEmitter.Enabled = false
+		end
+
+		if gameData.startPromptText then gameData.startPromptText:Destroy() end
+		local promptGui = Instance.new("BillboardGui")
+		promptGui.Name = "StartPrompt"
+		promptGui.Adornee = hrp
+		promptGui.Size = UDim2.fromScale(10, 2)
+		promptGui.ExtentsOffset = Vector3.new(0, 4, 0)
+		promptGui.AlwaysOnTop = true
+
+		local promptLbl = Instance.new("TextLabel", promptGui)
+		promptLbl.Size = UDim2.fromScale(1, 1)
+		promptLbl.BackgroundTransparency = 1
+		promptLbl.Text = "PRESS SPACE TO START"
+		promptLbl.Font = Enum.Font.GothamBlack
+		promptLbl.TextColor3 = Color3.new(1, 1, 1)
+		promptLbl.TextScaled = true
+
+		local stroke = Instance.new("UIStroke", promptLbl)
+		stroke.Thickness = 2
+
+		promptGui.Parent = playerGui
+		gameData.startPromptText = promptGui
+	end
+
+	table.clear(gameData.platforms)
+	gameData.score = 0
+	gameData.targetPlatform = nil
+	gameData.isCharging = false
+	gameData.isJumping = false
+	gameData.startTime = os.clock()
+
+	table.insert(gameData.platforms, base)
+	createInGameHUD()
+
+	local Camera = workspace.CurrentCamera
+	cameraOriginalCFrame = Camera.CFrame
+	Camera.CameraType = Enum.CameraType.Scriptable
+	UpdateCamera()
+
+	task.delay(1.0, function()
+		if inGame then
+			SpawnNextPlatform()
+		end
+	end)
+end
+
+endGame = function()
+	local finalTime = 0
+	if gameData.startTime > 0 then finalTime = os.clock() - gameData.startTime end
+	if MatchStatus then MatchStatus:FireServer("GameOver", gameData.score, finalTime) end
+	inGame = false
+
+	if hudGui then hudGui:Destroy() end
+	if versusGui then versusGui:Destroy() end
+
+	Cleanup3DGame()
+	playSound(gameOverSound)
+	setBlurEnabled(true, 56)
+	currentMenuType = "GameOver"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TapEndGui"
+	screenGui.ResetOnSpawn = false
+	local frame = Instance.new("Frame", screenGui)
+	frame.Size = UDim2.fromOffset(400, 250)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = COLOR_BG
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+
+	local title = Instance.new("TextLabel", frame)
+	title.Text = "GAME OVER\nSCORE: " .. tostring(gameData.score)
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.Size = UDim2.new(1,0,0,80)
+	title.BackgroundTransparency = 1
+
+	local menuBtn = createStyledButton(frame, "MENU", UDim2.new(0.28, 0, 0.75, 0), UDim2.new(0.4, 0, 0, 50), COLOR_BTN_BASE, "controller")
+	local exitBtn = createStyledButton(frame, "EXIT", UDim2.new(0.72, 0, 0.75, 0), UDim2.new(0.4, 0, 0, 50), COLOR_BTN_EXIT, "door")
+
+	local function onMenu()
+		playSound(selectSound)
+		screenGui:Destroy() 
+		createMenuGui()
+	end
+
+	local function onExit()
+		playSound(selectSound)
+		screenGui:Destroy() 
+		FullQuitGame()
+	end
+
+	buttonActions[menuBtn] = onMenu
+	buttonActions[exitBtn] = onExit
+	menuBtn.MouseButton1Click:Connect(onMenu)
+	exitBtn.MouseButton1Click:Connect(onExit)
+
+	table.insert(currentButtons, menuBtn)
+	table.insert(currentButtons, exitBtn)
+	selectedButtonIndex = 1
+	updateSelectionVisuals()
+end
+
+local function HandleButtonAction(btn)
+	if not btn then return end
+	local action = btn:GetAttribute("ActionName")
+	playSound(selectSound)
+
+	if action == "PLAY" then
+		if playerGui:FindFirstChild("TapArcadeMenu") then playerGui.TapArcadeMenu:Destroy() end
+		createPlayModeMenu()
+	elseif action == "VIP" or action == "TAP" then
+		if playerGui:FindFirstChild("TapArcadeMenu") then playerGui.TapArcadeMenu:Destroy() end
+		createDonateMenu()
+	elseif action == "EXIT" then
+		FullQuitGame()
+	elseif action == "SOLO" then
+		if playerGui:FindFirstChild("TapPlayModeMenu") then playerGui.TapPlayModeMenu:Destroy() end
+		currentMenuType = nil
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+		inGame = true
+		isVersusMode = false
+		disablePlayerMovement()
+		if StartRequest then pcall(function() StartRequest:FireServer("Solo") end) end
+		Setup3DGame()
+	elseif action == "VERSUS" then
+		if playerGui:FindFirstChild("TapPlayModeMenu") then playerGui.TapPlayModeMenu:Destroy() end
+		currentMenuType = nil 
+		table.clear(currentButtons)
+		table.clear(buttonActions)
+		local success, LobbyClient = pcall(function()
+			return require(player.PlayerScripts:WaitForChild("TapAndHoldLobbyClient"))
+		end)
+		if success and LobbyClient and LobbyClient.OpenMenu then
+			LobbyClient.OpenMenu()
+		end
+	elseif action == "BACK" or action == "MENU" then
+		ReturnToMainMenu()
+	elseif string.find(action, "DONATE") then
+		local id = tonumber(string.match(action, "%d+"))
+		if id then MarketplaceService:PromptProductPurchase(player, id) end
+	end
+end
+
+createMenuGui = function()
+	if playerGui:FindFirstChild("TapArcadeMenu") then return end
+	setBlurEnabled(true, 56)
+	disablePlayerMovement()
+	currentMenuType = "Main"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TapArcadeMenu"
+	screenGui.ResetOnSpawn = false
+	local frame = Instance.new("Frame", screenGui)
+	frame.Size = UDim2.fromOffset(400, 320)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = COLOR_BG
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+
+	local titleContainer = Instance.new("Frame", frame)
+	titleContainer.Size = UDim2.new(1, 0, 0, 80)
+	titleContainer.Position = UDim2.new(0, 0, 0, 10)
+	titleContainer.BackgroundTransparency = 1
+	local titleLayout = Instance.new("UIListLayout", titleContainer)
+	titleLayout.FillDirection = Enum.FillDirection.Horizontal
+	titleLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	titleLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	titleLayout.Padding = UDim.new(0, 10)
+
+	local icon = createIcon(titleContainer, "jump", 50, COLOR_TITLE_ALT)
+	icon.LayoutOrder = 1
+	local textGroup = Instance.new("Frame", titleContainer)
+	textGroup.Size = UDim2.fromOffset(240, 60)
+	textGroup.BackgroundTransparency = 1
+	textGroup.LayoutOrder = 2
+	local titleShadow = Instance.new("TextLabel", textGroup)
+	titleShadow.Size = UDim2.new(1, 0, 1, 0)
+	titleShadow.Position = UDim2.fromOffset(2, 2)
+	titleShadow.BackgroundTransparency = 1
+	titleShadow.Text = "TAP AND HOLD"
+	titleShadow.Font = Enum.Font.GothamBold
+	titleShadow.TextScaled = true
+	titleShadow.TextColor3 = COLOR_TITLE_ALT
+	titleShadow.ZIndex = frame.ZIndex + 2
+	local title = Instance.new("TextLabel", textGroup)
+	title.Size = UDim2.new(1, 0, 1, 0)
+	title.BackgroundTransparency = 1
+	title.Text = "TAP AND HOLD"
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.ZIndex = frame.ZIndex + 3
+
+	local ti = TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+	TweenService:Create(title, ti, { TextColor3 = COLOR_TITLE_ALT }):Play()
+	TweenService:Create(titleShadow, ti, { TextColor3 = COLOR_TITLE_MAIN }):Play()
+	TweenService:Create(icon, ti, { Rotation = 15 }):Play()
+
+	local playBtn = createStyledButton(frame, "PLAY", UDim2.new(0.5, 0, 0, 125), UDim2.new(0.8, 0, 0, 50), COLOR_BTN_PLAY, "controller")
+	local vipBtn = createStyledButton(frame, "VIP", UDim2.new(0.5, 0, 0, 190), UDim2.new(0.8, 0, 0, 50), COLOR_BTN_BASE, "crown")
+	local exitBtn = createStyledButton(frame, "EXIT", UDim2.new(0.5, 0, 0, 255), UDim2.new(0.8, 0, 0, 50), COLOR_BTN_EXIT, "door")
+
+	buttonActions[playBtn] = function() HandleButtonAction(playBtn) end
+	buttonActions[vipBtn] = function() HandleButtonAction(vipBtn) end
+	buttonActions[exitBtn] = function() HandleButtonAction(exitBtn) end
+	playBtn.MouseButton1Click:Connect(buttonActions[playBtn])
+	vipBtn.MouseButton1Click:Connect(buttonActions[vipBtn])
+	exitBtn.MouseButton1Click:Connect(buttonActions[exitBtn])
+
+	table.insert(currentButtons, playBtn)
+	table.insert(currentButtons, vipBtn)
+	table.insert(currentButtons, exitBtn)
+	selectedButtonIndex = 1
+	updateSelectionVisuals()
+end
+
+createPlayModeMenu = function()
+	if playerGui:FindFirstChild("TapPlayModeMenu") then return end
+	setBlurEnabled(true, 56)
+	disablePlayerMovement()
+	currentMenuType = "PlayMode"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TapPlayModeMenu"
+	screenGui.ResetOnSpawn = false
+	local frame = Instance.new("Frame", screenGui)
+	frame.Size = UDim2.fromOffset(400, 320)
+	frame.Position = UDim2.fromScale(0.5, 0.5)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BackgroundColor3 = COLOR_BG
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+	local title = Instance.new("TextLabel", frame)
+	title.Text = "SELECT MODE"
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.Size = UDim2.new(1,0,0,50)
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.new(0,0,0,10)
+
+	local soloBtn = createStyledButton(frame, "SOLO", UDim2.new(0.5,0,0,100), UDim2.fromOffset(200,50), COLOR_BTN_PLAY, "solo")
+	local versusBtn = createStyledButton(frame, "VERSUS", UDim2.new(0.5,0,0,165), UDim2.fromOffset(200,50), COLOR_BTN_BASE, "duo")
+	local backBtn = createStyledButton(frame, "BACK", UDim2.new(0.5,0,0,230), UDim2.fromOffset(200,50), COLOR_BTN_EXIT, "back")
+
+	buttonActions[soloBtn] = function() HandleButtonAction(soloBtn) end
+	buttonActions[versusBtn] = function() HandleButtonAction(versusBtn) end
+	buttonActions[backBtn] = function() HandleButtonAction(backBtn) end
+	soloBtn.MouseButton1Click:Connect(buttonActions[soloBtn])
+	versusBtn.MouseButton1Click:Connect(buttonActions[versusBtn])
+	backBtn.MouseButton1Click:Connect(buttonActions[backBtn])
+
+	table.insert(currentButtons, soloBtn)
+	table.insert(currentButtons, versusBtn)
+	table.insert(currentButtons, backBtn)
+	selectedButtonIndex = 1
+	updateSelectionVisuals()
+end
+
+createDonateMenu = function()
+	if playerGui:FindFirstChild("TapDonateMenu") then return end
+	setBlurEnabled(true, 56)
+	disablePlayerMovement()
+	currentMenuType = "Donate"
+	table.clear(currentButtons)
+	table.clear(buttonActions)
+
+	local screenGui = Instance.new("ScreenGui", playerGui)
+	screenGui.Name = "TapDonateMenu"
+	screenGui.ResetOnSpawn = false
+	local frame = Instance.new("Frame", screenGui)
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.Position = UDim2.new(0.5, 0, 0.5, 0)
+	frame.Size = UDim2.fromOffset(450, 380)
+	frame.BackgroundColor3 = COLOR_BG
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 15)
+	addGlassEffectToFrame(frame)
+	local title = Instance.new("TextLabel", frame)
+	title.Size = UDim2.new(1, 0, 0, 50)
+	title.Text = "TAP SUPPORT"
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.TextColor3 = COLOR_TITLE_MAIN
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.new(0, 0, 0, 10)
+	local gridContainer = Instance.new("Frame", frame)
+	gridContainer.Size = UDim2.new(0.9, 0, 0.65, 0)
+	gridContainer.Position = UDim2.new(0.5, 0, 0.18, 0)
+	gridContainer.AnchorPoint = Vector2.new(0.5, 0)
+	gridContainer.BackgroundTransparency = 1
+	local gridLayout = Instance.new("UIGridLayout", gridContainer)
+	gridLayout.CellSize = UDim2.new(0.48, 0, 0.28, 0)
+	gridLayout.CellPadding = UDim2.new(0.04, 0, 0.05, 0)
+	gridLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+	for _, prod in ipairs(DONATION_PRODUCTS) do
+		local btnText = prod.Name .. "\n" .. prod.Price
+		local btn = createStyledButton(gridContainer, btnText, UDim2.new(), UDim2.new(), COLOR_BTN_BASE, nil)
+		btn:SetAttribute("ActionName", "DONATE_" .. prod.Id)
+		buttonActions[btn] = function() HandleButtonAction(btn) end
+		btn.MouseButton1Click:Connect(buttonActions[btn])
+		table.insert(currentButtons, btn)
+	end
+
+	local backBtn = createStyledButton(frame, "MENU", UDim2.new(0.5, 0, 0.90, 0), UDim2.new(0.8, 0, 0, 40), COLOR_BTN_EXIT, "door")
+	buttonActions[backBtn] = function() HandleButtonAction(backBtn) end
+	backBtn.MouseButton1Click:Connect(buttonActions[backBtn])
+	table.insert(currentButtons, backBtn)
+	selectedButtonIndex = 1
+	updateSelectionVisuals()
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if input.KeyCode == Enum.KeyCode.Escape then
+		if currentMenuType == "Main" or currentMenuType == "GameOver" then
+			FullQuitGame()
+		elseif currentMenuType == "PlayMode" or currentMenuType == "Donate" then
+			ReturnToMainMenu()
+		elseif inGame then
+			if isVersusMode then
+				local lobbyRemotes = ReplicatedStorage.ArcadeRemotes.TapAndHold.LobbySystem
+				if lobbyRemotes then lobbyRemotes.LeaveRoom:FireServer() end
+			end
+			FullQuitGame()
+		end
+		return
+	end
+
+	if inGame and not processed then
+		if input.KeyCode == Enum.KeyCode.Space or input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			StartCharge()
+		end
+		return
+	end
+
+	if processed then return end
+
+	if currentMenuType and #currentButtons > 0 then
+		if input.KeyCode == Enum.KeyCode.W or input.KeyCode == Enum.KeyCode.Up or input.KeyCode == Enum.KeyCode.A or input.KeyCode == Enum.KeyCode.Left then
+			selectedButtonIndex = selectedButtonIndex - 1
+			if selectedButtonIndex < 1 then selectedButtonIndex = #currentButtons end
+			playSound(hoverSound);
+			updateSelectionVisuals()
+		elseif input.KeyCode == Enum.KeyCode.S or input.KeyCode == Enum.KeyCode.Down or input.KeyCode == Enum.KeyCode.D or input.KeyCode == Enum.KeyCode.Right then
+			selectedButtonIndex = selectedButtonIndex + 1
+			if selectedButtonIndex > #currentButtons then selectedButtonIndex = 1 end
+			playSound(hoverSound);
+			updateSelectionVisuals()
+		elseif input.KeyCode == Enum.KeyCode.Return or input.KeyCode == Enum.KeyCode.Space or input.KeyCode == Enum.KeyCode.KeypadEnter then
+			local btn = currentButtons[selectedButtonIndex]
+			if btn and buttonActions[btn] then
+				buttonActions[btn]()
+			end
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, processed)
+	if inGame and not processed then
+		if input.KeyCode == Enum.KeyCode.Space or input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			ReleaseCharge()
+		end
+	end
+end)
+
+if OpenArcadeMenu then
+	OpenArcadeMenu.OnClientEvent:Connect(function(gn)
+		if gn == "TapAndHold" then
+			local lobbyOpen = playerGui:FindFirstChild("TapAndHoldLobby") or playerGui:FindFirstChild("LobbyEntry")
+			if not inGame and not playerGui:FindFirstChild("TapArcadeMenu") and not lobbyOpen then
+				createMenuGui()
+			end
+		end
+	end)
+end
+
+if MatchStatus then
+	MatchStatus.OnClientEvent:Connect(function(status)
+		if status == "GameOver" and not isVersusMode then endGame() end
+	end)
+end
