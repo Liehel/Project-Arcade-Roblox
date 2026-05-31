@@ -3,7 +3,16 @@
 > *A portfolio project by San , 10 classic arcade games rebuilt inside a 3D world engine.*
 
 ---
+Copyright (c) 2025 Sam (Liehel)
 
+This project is licensed under CC BY-NC-ND 4.0.
+You may view and study this code freely.
+You may NOT distribute, sell, or modify this work
+without explicit written permission from the author.
+
+Full license: https://creativecommons.org/licenses/by-nc-nd/4.0/
+
+---
 ## 🎯 What is this project?
 
 **Project Arcade Roblox** is a game world built inside Roblox Studio where the player can find and play **10 different arcade games**, 7 of them are classic 2D games recreated inside a 3D engine, and the last 3 are original 3D games with multiplayer support.
