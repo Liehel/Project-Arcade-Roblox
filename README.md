@@ -4,6 +4,9 @@
 
 ---
 Copyright (c) 2025 Sam (Liehel)
+Hey everyone, if you want to use the code, feel free to do so; copying it is no problem at all, provided that I retain the code and the original post regarding it within my game. If, however, I were to one day transfer that authority and those rights to someone else, the situation might change.
+
+This is extra for the moment...
 
 This project is licensed under CC BY-NC-ND 4.0.
 You may view and study this code freely.
@@ -18,8 +21,6 @@ Full license: https://creativecommons.org/licenses/by-nc-nd/4.0/
 **Project Arcade Roblox** is a game world built inside Roblox Studio where the player can find and play **10 different arcade games**, 7 of them are classic 2D games recreated inside a 3D engine, and the last 3 are original 3D games with multiplayer support.
 
 The main goal of this project is simple: **keep the player inside the world for at least 8 minutes**, moving from game to game instead of leaving after just one. Each game is a mini-arcade machine the player can walk up to and interact with.
-
-> 📄 *Full technical documentation will be uploaded soon in a separate document.*
 
 ---
 
