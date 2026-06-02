@@ -158,7 +158,6 @@ This project is the foundation for learning game development. The next step is *
 
 <div align="center">
 
-*Made with patience, lots of DataStore debugging, and caffeine.*
 
 **[▶ Play on Roblox](#)** &nbsp;|&nbsp; **[📄 Full Documentation — Coming Soon](#)**
 
