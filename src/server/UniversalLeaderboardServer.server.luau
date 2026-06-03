@@ -13,6 +13,16 @@ local UpdateUniversalLeaderboard = GlobalBoardFolder:FindFirstChild("UpdateUnive
 UpdateUniversalLeaderboard.Name = "UpdateUniversalLeaderboard"
 UpdateUniversalLeaderboard.Parent = GlobalBoardFolder
 
+-- lets a client query its own rank for a game, even when outside the top 10
+local GetMyRank = GlobalBoardFolder:FindFirstChild("GetMyRank") or Instance.new("RemoteFunction")
+GetMyRank.Name = "GetMyRank"
+GetMyRank.Parent = GlobalBoardFolder
+
+GetMyRank.OnServerInvoke = function(player, gameId)
+	if type(gameId) ~= "string" then return nil end
+	return UniversalLeaderboard:GetPlayerRank(gameId, player.UserId)
+end
+
 UniversalLeaderboard:Init()
 
 local BROADCAST_INTERVAL = 10

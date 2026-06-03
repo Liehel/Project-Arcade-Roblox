@@ -38,6 +38,9 @@ local TEXT_SIZE_BODY = 32
 local TEXT_SIZE_HEADER = 24
 
 local activeBoards = {}
+-- caches this player's own rank per game so the 10th row can show their score
+-- when they are outside the top 10. nil means unranked / not fetched yet.
+local myRankCache = {}
 
 -- creates a single cell in a row, either as text or an async avatar image
 local function createRowCell(parentRow, content, colConfig, isHeader, currentPalette, gameId)
@@ -203,7 +206,25 @@ local function renderOnPart(part, gameId, gameData)
 		createRowCell(header, txt, col, true, palette, gameId)
 	end
 
-	if #top == 0 then
+	-- decide which rows to render:
+	--  - if the local player is already in the top 10, show the full top 10
+	--  - if not, show the top 9 plus a 10th row with the player's own real rank
+	local meInTop = false
+	for _, e in ipairs(top) do
+		if e.userId == localUserId then meInTop = true break end
+	end
+
+	local rows = {}
+	if meInTop or not myRankCache[gameId] then
+		rows = top
+	else
+		for i = 1, math.min(9, #top) do
+			rows[i] = top[i]
+		end
+		rows[#rows + 1] = myRankCache[gameId]
+	end
+
+	if #rows == 0 then
 		local empty = Instance.new("TextLabel", board.List)
 		empty.Name = "EmptyText"
 		empty.Size = UDim2.new(1, 0, 0, 100)
@@ -214,7 +235,7 @@ local function renderOnPart(part, gameId, gameData)
 		empty.TextSize = 30
 		empty.LayoutOrder = 2
 	else
-		for i, entry in ipairs(top) do
+		for i, entry in ipairs(rows) do
 			local row = Instance.new("Frame", board.List)
 			row.Name = "Row_" .. i
 			row.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
@@ -248,6 +269,7 @@ end
 local ArcadeRemotes = ReplicatedStorage:WaitForChild("ArcadeRemotes")
 local GlobalBoardFolder = ArcadeRemotes:WaitForChild("GlobalBoard")
 local UpdateUniversalLeaderboard = GlobalBoardFolder:WaitForChild("UpdateUniversalLeaderboard")
+local GetMyRank = GlobalBoardFolder:WaitForChild("GetMyRank", 10)
 
 -- maps tagged parts to their game id and triggers a re-render for each
 UpdateUniversalLeaderboard.OnClientEvent:Connect(function(allData)
@@ -279,6 +301,25 @@ UpdateUniversalLeaderboard.OnClientEvent:Connect(function(allData)
 
 			if gameId and allData[gameId] then
 				renderOnPart(part, gameId, allData[gameId])
+
+				-- refresh this player's own rank, then re-render so their row
+				-- shows in slot 10 when they are outside the top 10
+				if GetMyRank then
+					local gd = allData[gameId]
+					local thisPart = part
+					local thisGameId = gameId
+					task.spawn(function()
+						local ok, rank = pcall(function()
+							return GetMyRank:InvokeServer(thisGameId)
+						end)
+						if ok then
+							myRankCache[thisGameId] = rank
+							if thisPart and thisPart.Parent then
+								renderOnPart(thisPart, thisGameId, gd)
+							end
+						end
+					end)
+				end
 			end
 		end
 	end

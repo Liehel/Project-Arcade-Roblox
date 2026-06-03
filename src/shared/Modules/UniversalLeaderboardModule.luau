@@ -336,4 +336,16 @@ function UniversalLeaderboard:GetTop(gameId, maxEntries)
 	return top
 end
 
+-- returns a player's own entry with its real position, even if outside the top 10
+-- (the score list is kept sorted, so the array index is the rank). returns nil if unranked.
+function UniversalLeaderboard:GetPlayerRank(gameId, userId)
+	if not self.Scores[gameId] then return nil end
+	for i, e in ipairs(self.Scores[gameId]) do
+		if e.userId == userId then
+			return { position = i, userId = e.userId, name = e.name, score = e.score, timeMs = e.timeMs }
+		end
+	end
+	return nil
+end
+
 return UniversalLeaderboard

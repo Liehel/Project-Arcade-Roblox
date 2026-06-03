@@ -22,6 +22,8 @@ end
 local GetGameDashboard    = ensureRemote("GetGameDashboard",    "RemoteFunction")
 local GetGeneralDashboard = ensureRemote("GetGeneralDashboard", "RemoteFunction")
 local GetMoneyDashboard   = ensureRemote("GetMoneyDashboard",   "RemoteFunction")
+local GetRecentDonations  = ensureRemote("GetRecentDonations",  "RemoteFunction")
+local GetRecentScores     = ensureRemote("GetRecentScores",     "RemoteFunction")
 local DashboardUpdated    = ensureRemote("DashboardUpdated",    "RemoteEvent")
 
 -- per-(player, board) rate limit so multiple boards can refresh independently
@@ -29,11 +31,11 @@ local DashboardUpdated    = ensureRemote("DashboardUpdated",    "RemoteEvent")
 local lastRequestAt = {}
 local MIN_INTERVAL  = 5.0   -- minimum seconds between refreshes of the same board by the same player
 
-local function rateLimited(player, gameId)
+local function rateLimited(player, gameId, interval)
 	local key = player.UserId .. "_" .. (gameId or "meta")
 	local now = os.clock()
 	local prev = lastRequestAt[key] or 0
-	if now - prev < MIN_INTERVAL then return true end
+	if now - prev < (interval or MIN_INTERVAL) then return true end
 	lastRequestAt[key] = now
 	return false
 end
@@ -55,6 +57,18 @@ end
 GetMoneyDashboard.OnServerInvoke = function(player)
 	if rateLimited(player, "Money") then return nil end
 	return AnalyticsModule.GetMoneyDashboard()
+end
+
+-- returns the live donations feed (RealMoney board); lighter rate limit for near real-time
+GetRecentDonations.OnServerInvoke = function(player)
+	if rateLimited(player, "FeedDonations", 2.0) then return nil end
+	return AnalyticsModule.GetRecentDonations()
+end
+
+-- returns the live scores feed (RealPlayer board)
+GetRecentScores.OnServerInvoke = function(player)
+	if rateLimited(player, "FeedScores", 2.0) then return nil end
+	return AnalyticsModule.GetRecentScores()
 end
 
 Players.PlayerRemoving:Connect(function(player)

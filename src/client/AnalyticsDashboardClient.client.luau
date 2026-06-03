@@ -6,6 +6,7 @@ local UserInputService     = game:GetService("UserInputService")
 local TweenService         = game:GetService("TweenService")
 local GuiService           = game:GetService("GuiService")
 local Lighting             = game:GetService("Lighting")
+local RunService           = game:GetService("RunService")
 
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local ChartEngine          = require(Modules:WaitForChild("ChartEngine"))
@@ -61,7 +62,16 @@ local DEFAULT_FACE = Enum.NormalId.Front
 -- how close (studs) the player must be to open a board by clicking it
 local OPEN_DISTANCE = 16
 
-local META_LABELS = { General = "GAMES OVERVIEW", Money = "REVENUE ANALYTICS" }
+local META_LABELS = {
+	General    = "GAMES OVERVIEW",
+	Money      = "REVENUE ANALYTICS",
+	RealMoney  = "LIVE DONATIONS",
+	MoneyG     = "REVENUE BY GAME",
+	RealPlayer = "LIVE SCORES",
+}
+
+-- boards that show a live scrolling ticker feed
+local FEED_BOARDS = { RealMoney = true, RealPlayer = true }
 
 local LEVEL_GAMES = {
 	JuiceCutter = true, FoxyFruit = true,
@@ -95,6 +105,8 @@ end
 local GetGameDashboard    = AnalyticsFolder:WaitForChild("GetGameDashboard", 10)
 local GetGeneralDashboard = AnalyticsFolder:WaitForChild("GetGeneralDashboard", 10)
 local GetMoneyDashboard   = AnalyticsFolder:WaitForChild("GetMoneyDashboard", 10)
+local GetRecentDonations  = AnalyticsFolder:WaitForChild("GetRecentDonations", 10)
+local GetRecentScores     = AnalyticsFolder:WaitForChild("GetRecentScores", 10)
 local DashboardUpdated    = AnalyticsFolder:WaitForChild("DashboardUpdated", 10)
 
 -- ----------------------------------------------------------------------------
@@ -825,6 +837,149 @@ local function buildRevenueScatter(parent, x, y, w, h, games)
 end
 
 -- ----------------------------------------------------------------------------
+-- live ticker (marquee) for the bank feed boards
+-- ----------------------------------------------------------------------------
+
+-- per-background ticker generation token; bumping it stops the old animation loop
+local tickerTokens = setmetatable({}, { __mode = "k" })
+
+-- builds an infinite vertical scrolling list inside a container.
+--  items     : array of data (newest first)
+--  rowBuilder: function(parent, yOffset, width, rowH, item, index) -> creates one row
+local function buildTicker(bg, container, items, rowBuilder)
+	local cW = container.AbsoluteSize.X
+	-- AbsoluteSize may be 0 before layout; fall back to the declared offset width
+	if cW <= 0 then cW = container.Size.X.Offset end
+
+	local rowH = 78
+	local cH = container.Size.Y.Offset
+
+	if #items == 0 then
+		mkLabel(container, "Waiting for live activity…", {
+			Position = UDim2.fromScale(0, 0.5),
+			Size = UDim2.new(1, 0, 0, 40),
+			AnchorPoint = Vector2.new(0, 0.5),
+			TextColor3 = PALETTE.textMuted, Font = Enum.Font.Gotham, TextSize = 28,
+			TextXAlignment = Enum.TextXAlignment.Center
+		})
+		return
+	end
+
+	local listH = #items * rowH
+
+	-- track holds two stacked copies of the list for a seamless loop
+	local track = mkFrame(container, {
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.new(1, 0, 0, listH * 2),
+		BackgroundTransparency = 1
+	})
+	track.Name = "Track"
+
+	for copy = 0, 1 do
+		for i, item in ipairs(items) do
+			rowBuilder(track, copy * listH + (i - 1) * rowH, cW, rowH, item, i)
+		end
+	end
+
+	-- only animate when the list is taller than the visible area
+	tickerTokens[bg] = (tickerTokens[bg] or 0) + 1
+	local myToken = tickerTokens[bg]
+
+	if listH <= cH then return end
+
+	local SPEED = 36  -- pixels per second
+	task.spawn(function()
+		local y = 0
+		while bg.Parent and track.Parent and tickerTokens[bg] == myToken do
+			local dt = RunService.Heartbeat:Wait()
+			y = y - SPEED * dt
+			if y <= -listH then y = y + listH end
+			track.Position = UDim2.new(0, 0, 0, math.floor(y))
+		end
+	end)
+end
+
+-- builds one feed row: a colored game tag, a name, and a right-aligned value
+local function feedRow(parent, yOff, w, rowH, gameId, leftText, rightText, rightColor)
+	local row = mkFrame(parent, {
+		Position = UDim2.fromOffset(0, yOff),
+		Size = UDim2.new(1, 0, 0, rowH - 8),
+		BackgroundColor3 = PALETTE.surface
+	})
+	mkCorner(row, 8)
+	mkStroke(row, PALETTE.grid, 1, 0.6)
+
+	-- left color bar = game brand color
+	local bar = mkFrame(row, {
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.new(0, 6, 1, 0),
+		BackgroundColor3 = ChartEngine.ColorFor(gameId)
+	})
+	mkCorner(bar, 3)
+
+	-- game tag
+	mkLabel(row, labelFor(gameId), {
+		Position = UDim2.fromOffset(20, 8),
+		Size = UDim2.new(0.42, -20, 1, -16),
+		TextColor3 = ChartEngine.ColorFor(gameId),
+		Font = Enum.Font.GothamBold, TextSize = 26,
+		TextYAlignment = Enum.TextYAlignment.Center
+	})
+	-- player name / action
+	mkLabel(row, leftText, {
+		Position = UDim2.new(0.42, 8, 0, 8),
+		Size = UDim2.new(0.32, -8, 1, -16),
+		TextColor3 = PALETTE.text,
+		Font = Enum.Font.GothamMedium, TextSize = 28,
+		TextYAlignment = Enum.TextYAlignment.Center
+	})
+	-- value (robux / score)
+	mkLabel(row, rightText, {
+		Position = UDim2.new(0.74, 0, 0, 8),
+		Size = UDim2.new(0.26, -16, 1, -16),
+		TextColor3 = rightColor or PALETTE.text,
+		Font = Enum.Font.GothamBlack, TextSize = 32,
+		TextXAlignment = Enum.TextXAlignment.Right,
+		TextYAlignment = Enum.TextYAlignment.Center
+	})
+end
+
+-- draws a small revenue-by-hour sparkline cell for the MoneyG grid
+local function moneyMiniCell(parent, x, y, w, h, gameId, revenue, hourly)
+	local content = sectionCard(parent, x, y, w, h, labelFor(gameId))
+	local cW, cH = w - 40, h - 96
+
+	-- big revenue number
+	mkLabel(content, fmtRobux(revenue), {
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.new(1, 0, 0, 44),
+		TextColor3 = PALETTE.gold, Font = Enum.Font.GothamBold, TextSize = 40
+	})
+
+	local barsY = 52
+	local barsH = cH - barsY
+	if barsH < 30 then barsH = 30 end
+
+	local total = 0
+	for _, v in ipairs(hourly or {}) do total = total + v end
+
+	if total == 0 then
+		mkLabel(content, "no revenue yet", {
+			Position = UDim2.fromOffset(0, barsY + 8),
+			Size = UDim2.new(1, 0, 0, 24),
+			TextColor3 = PALETTE.textMuted, Font = Enum.Font.Gotham, TextSize = 18
+		})
+		return
+	end
+
+	drawChart(content, 0, barsY, cW, barsH, cW, barsH, function(canvas)
+		ChartEngine.DrawBarChart(canvas, {x=4, y=4, width=cW-8, height=barsH-8}, {
+			values = hourly, color = ChartEngine.ColorFor(gameId)
+		})
+	end)
+end
+
+-- ----------------------------------------------------------------------------
 -- dashboard renderers
 -- ----------------------------------------------------------------------------
 
@@ -1073,6 +1228,133 @@ local function renderLastMessage(bg, gameId)
 	})
 end
 
+-- board 13: live donations ticker (RealMoney)
+local function renderRealMoney(bg, items)
+	clearContent(bg)
+	items = items or {}
+
+	buildHeader(bg, "LIVE DONATIONS",
+		"Real-time feed of player contributions across all games", PALETTE.gold)
+
+	-- live dot
+	local dot = mkFrame(bg, {
+		Position = UDim2.fromOffset(SW - MARGIN - 220, 60),
+		Size = UDim2.fromOffset(16, 16),
+		BackgroundColor3 = PALETTE.danger
+	})
+	mkCorner(dot, 8)
+	mkLabel(bg, "LIVE", {
+		Position = UDim2.fromOffset(SW - MARGIN - 196, 48),
+		Size = UDim2.fromOffset(180, 40),
+		TextColor3 = PALETTE.danger, Font = Enum.Font.GothamBold, TextSize = 30,
+		TextXAlignment = Enum.TextXAlignment.Left
+	})
+
+	local container = mkFrame(bg, {
+		Position = UDim2.fromOffset(MARGIN, 200),
+		Size = UDim2.fromOffset(SW - MARGIN*2, SH - 200 - 48),
+		BackgroundTransparency = 1
+	})
+	container.ClipsDescendants = true
+
+	buildTicker(bg, container, items, function(parent, yOff, w, rowH, item)
+		feedRow(parent, yOff, w, rowH, item.gameId,
+			item.name or "Unknown",
+			"R$ " .. fmtNum(item.robux or 0),
+			PALETTE.gold)
+	end)
+
+	mkLabel(bg, "ANALYTICS — LIVE DONATIONS", {
+		Position = UDim2.fromOffset(MARGIN, SH-30),
+		Size = UDim2.new(1,-MARGIN*2,0,22),
+		TextColor3 = PALETTE.textMuted, Font = Enum.Font.Gotham, TextSize = FS.footer
+	})
+end
+
+-- board 15: live scores ticker (RealPlayer)
+local function renderRealPlayer(bg, items)
+	clearContent(bg)
+	items = items or {}
+
+	buildHeader(bg, "LIVE SCORES",
+		"Real-time feed of recent matches across all games", PALETTE.secondary)
+
+	local dot = mkFrame(bg, {
+		Position = UDim2.fromOffset(SW - MARGIN - 220, 60),
+		Size = UDim2.fromOffset(16, 16),
+		BackgroundColor3 = PALETTE.danger
+	})
+	mkCorner(dot, 8)
+	mkLabel(bg, "LIVE", {
+		Position = UDim2.fromOffset(SW - MARGIN - 196, 48),
+		Size = UDim2.fromOffset(180, 40),
+		TextColor3 = PALETTE.danger, Font = Enum.Font.GothamBold, TextSize = 30,
+		TextXAlignment = Enum.TextXAlignment.Left
+	})
+
+	local container = mkFrame(bg, {
+		Position = UDim2.fromOffset(MARGIN, 200),
+		Size = UDim2.fromOffset(SW - MARGIN*2, SH - 200 - 48),
+		BackgroundTransparency = 1
+	})
+	container.ClipsDescendants = true
+
+	buildTicker(bg, container, items, function(parent, yOff, w, rowH, item)
+		feedRow(parent, yOff, w, rowH, item.gameId,
+			item.name or "Unknown",
+			fmtNum(item.score or 0),
+			PALETTE.secondary)
+	end)
+
+	mkLabel(bg, "ANALYTICS — LIVE SCORES", {
+		Position = UDim2.fromOffset(MARGIN, SH-30),
+		Size = UDim2.new(1,-MARGIN*2,0,22),
+		TextColor3 = PALETTE.textMuted, Font = Enum.Font.Gotham, TextSize = FS.footer
+	})
+end
+
+-- board 14: grid of 10 mini revenue charts, one per game (MoneyG)
+local function renderMoneyG(bg, payload)
+	clearContent(bg)
+	local games = payload.games or {}
+
+	local totalRev = payload.totalRevenue or 0
+	buildHeader(bg, "REVENUE BY GAME",
+		string.format("Live revenue breakdown  ·  R$ %s total across %d games",
+			fmtNum(totalRev), #games),
+		PALETTE.gold)
+
+	-- 5 columns x 2 rows grid
+	local cols, rows = 5, 2
+	local gridY = 196
+	local gridH = SH - gridY - 48
+	local gap = 14
+	local cellW = math.floor((SW - MARGIN*2 - gap*(cols-1)) / cols)
+	local cellH = math.floor((gridH - gap*(rows-1)) / rows)
+
+	-- order games by revenue descending for a nicer layout
+	local sorted = {}
+	for _, g in ipairs(games) do table.insert(sorted, g) end
+	table.sort(sorted, function(a,b) return (a.revenue or 0) > (b.revenue or 0) end)
+
+	for idx, g in ipairs(sorted) do
+		if idx > cols * rows then break end
+		local c = (idx - 1) % cols
+		local r = math.floor((idx - 1) / cols)
+		moneyMiniCell(bg,
+			MARGIN + c * (cellW + gap),
+			gridY + r * (cellH + gap),
+			cellW, cellH,
+			g.gameId, g.revenue or 0, g.donationHourly)
+	end
+
+	mkLabel(bg, "ANALYTICS — REVENUE BY GAME", {
+		Position = UDim2.fromOffset(MARGIN, SH-30),
+		Size = UDim2.new(1,-MARGIN*2,0,22),
+		TextColor3 = PALETTE.textMuted, Font = Enum.Font.Gotham, TextSize = FS.footer
+	})
+end
+
 -- ----------------------------------------------------------------------------
 -- fullscreen mode
 -- ----------------------------------------------------------------------------
@@ -1178,9 +1460,16 @@ local function buildXIcon(parent)
 	bar(-45)
 end
 
--- builds the four-page navigation list anchored on the game the player came from
--- order: [the game] -> General -> Money -> LastMessage
+-- fixed bank boards: open as a single page with no navigation (just exit)
+local FIXED_BOARDS = { RealMoney = true, MoneyG = true, RealPlayer = true }
+
+-- builds the navigation page list for fullscreen, starting on the clicked board
 local function buildFullscreenPages(startGameId)
+	-- fixed bank boards show only themselves, no navigation
+	if FIXED_BOARDS[startGameId] then
+		return { startGameId }
+	end
+	-- game board: itself + the standard analytics trio
 	local pages = {}
 	if startGameId ~= "General" and startGameId ~= "Money" and startGameId ~= "LastMessage" then
 		table.insert(pages, startGameId)
@@ -1196,6 +1485,9 @@ local function openFullscreen(startGameId)
 
 	local pages = buildFullscreenPages(startGameId)
 	if #pages == 0 then return end
+
+	-- single-page boards (fixed bank boards) have no navigation at all
+	local singlePage = (#pages <= 1)
 
 	-- freeze the avatar so navigation keys don't move it in the world
 	freezeCharacter()
@@ -1296,17 +1588,25 @@ local function openFullscreen(startGameId)
 
 		local gameId = pages[currentIdx]
 		local controls
-		if isPhone then
-			controls = "Swipe left / right to navigate  ·  Tap X to exit"
-		elseif UserInputService.TouchEnabled then
-			controls = "Tap arrows to navigate  ·  Tap X to exit"
-		elseif UserInputService.GamepadEnabled then
-			controls = "D-Pad / LB-RB navigate  ·  B exit"
+		if singlePage then
+			-- fixed board: only the exit hint, no navigation
+			if isPhone then controls = "Tap X to exit"
+			elseif UserInputService.GamepadEnabled then controls = "B to exit"
+			else controls = "Esc to exit" end
+			navLabel.Text = string.format("%s     |     %s", labelFor(gameId), controls)
 		else
-			controls = "A/D or arrows navigate  ·  Esc exit"
+			if isPhone then
+				controls = "Swipe left / right to navigate  ·  Tap X to exit"
+			elseif UserInputService.TouchEnabled then
+				controls = "Tap arrows to navigate  ·  Tap X to exit"
+			elseif UserInputService.GamepadEnabled then
+				controls = "D-Pad / LB-RB navigate  ·  B exit"
+			else
+				controls = "A/D or arrows navigate  ·  Esc exit"
+			end
+			navLabel.Text = string.format("%d / %d   ·   %s     |     %s",
+				currentIdx, #pages, labelFor(gameId), controls)
 		end
-		navLabel.Text = string.format("%d / %d   ·   %s     |     %s",
-			currentIdx, #pages, labelFor(gameId), controls)
 
 		-- snap to visible
 		navPanel.Visible = true
@@ -1358,6 +1658,15 @@ local function openFullscreen(startGameId)
 			elseif gameId == "Money" then
 				local ok, p = pcall(function() return GetMoneyDashboard:InvokeServer() end)
 				if screenGui.Parent then renderMoneyDashboard(inner, ok and p or emptyMoneyData()) end
+			elseif gameId == "MoneyG" then
+				local ok, p = pcall(function() return GetMoneyDashboard:InvokeServer() end)
+				if screenGui.Parent then renderMoneyG(inner, ok and p or emptyMoneyData()) end
+			elseif gameId == "RealMoney" then
+				local ok, p = pcall(function() return GetRecentDonations:InvokeServer() end)
+				if screenGui.Parent then renderRealMoney(inner, ok and p or {}) end
+			elseif gameId == "RealPlayer" then
+				local ok, p = pcall(function() return GetRecentScores:InvokeServer() end)
+				if screenGui.Parent then renderRealPlayer(inner, ok and p or {}) end
 			else
 				local ok, p = pcall(function() return GetGameDashboard:InvokeServer(gameId) end)
 				if screenGui.Parent then renderGameDashboard(inner, gameId, ok and p or emptyGameData()) end
@@ -1377,38 +1686,41 @@ local function openFullscreen(startGameId)
 
 	-- on-screen navigation buttons float at the screen edges (mouse / touch).
 	-- on phones they are pinned to the absolute screen extremes and always visible.
-	local edgeInset = isPhone and 0 or 24
-	local btnProps = {
-		Size = UDim2.fromOffset(84, 84),
-		BackgroundColor3 = PALETTE.surface,
-		Font = Enum.Font.GothamBold,
-		TextColor3 = PALETTE.text,
-		TextSize = 44,
-		AutoButtonColor = true,
-		BorderSizePixel = 0,
-	}
+	-- fixed single-page boards get no move buttons at all.
+	if not singlePage then
+		local edgeInset = isPhone and 0 or 24
+		local btnProps = {
+			Size = UDim2.fromOffset(84, 84),
+			BackgroundColor3 = PALETTE.surface,
+			Font = Enum.Font.GothamBold,
+			TextColor3 = PALETTE.text,
+			TextSize = 44,
+			AutoButtonColor = true,
+			BorderSizePixel = 0,
+		}
 
-	prevBtn = Instance.new("TextButton")
-	prevBtn.AnchorPoint = Vector2.new(0, 0.5)
-	prevBtn.Position = UDim2.new(0, edgeInset, 0.5, 0)
-	prevBtn.Text = "◀"
-	for k,v in pairs(btnProps) do prevBtn[k]=v end
-	mkCorner(prevBtn, 12)
-	mkStroke(prevBtn, PALETTE.grid, 1, 0.4)
-	if isPhone then prevBtn.BackgroundTransparency = 0.15 end
-	prevBtn.Parent = outer
-	prevBtn.MouseButton1Click:Connect(goPrev)
+		prevBtn = Instance.new("TextButton")
+		prevBtn.AnchorPoint = Vector2.new(0, 0.5)
+		prevBtn.Position = UDim2.new(0, edgeInset, 0.5, 0)
+		prevBtn.Text = "◀"
+		for k,v in pairs(btnProps) do prevBtn[k]=v end
+		mkCorner(prevBtn, 12)
+		mkStroke(prevBtn, PALETTE.grid, 1, 0.4)
+		if isPhone then prevBtn.BackgroundTransparency = 0.15 end
+		prevBtn.Parent = outer
+		prevBtn.MouseButton1Click:Connect(goPrev)
 
-	nextBtn = Instance.new("TextButton")
-	nextBtn.AnchorPoint = Vector2.new(1, 0.5)
-	nextBtn.Position = UDim2.new(1, -edgeInset, 0.5, 0)
-	nextBtn.Text = "▶"
-	for k,v in pairs(btnProps) do nextBtn[k]=v end
-	mkCorner(nextBtn, 12)
-	mkStroke(nextBtn, PALETTE.grid, 1, 0.4)
-	if isPhone then nextBtn.BackgroundTransparency = 0.15 end
-	nextBtn.Parent = outer
-	nextBtn.MouseButton1Click:Connect(goNext)
+		nextBtn = Instance.new("TextButton")
+		nextBtn.AnchorPoint = Vector2.new(1, 0.5)
+		nextBtn.Position = UDim2.new(1, -edgeInset, 0.5, 0)
+		nextBtn.Text = "▶"
+		for k,v in pairs(btnProps) do nextBtn[k]=v end
+		mkCorner(nextBtn, 12)
+		mkStroke(nextBtn, PALETTE.grid, 1, 0.4)
+		if isPhone then nextBtn.BackgroundTransparency = 0.15 end
+		nextBtn.Parent = outer
+		nextBtn.MouseButton1Click:Connect(goNext)
+	end
 
 	-- exit button with a frame-drawn X (renders on all platforms), top-right corner
 	local exitBtn = Instance.new("TextButton")
@@ -1425,7 +1737,7 @@ local function openFullscreen(startGameId)
 	exitBtn.MouseButton1Click:Connect(closeFullscreen)
 
 	-- on touch phones the buttons start visible, then auto-hide via showNav (swipe is primary)
-	if touchHide then
+	if touchHide and prevBtn and nextBtn then
 		prevBtn.Visible = true
 		nextBtn.Visible = true
 	end
@@ -1442,6 +1754,9 @@ local function openFullscreen(startGameId)
 			closeFullscreen()
 			return
 		end
+
+		-- fixed boards have no page navigation
+		if singlePage then return end
 
 		-- navigation keys respect gameProcessed (so chat typing doesn't navigate)
 		if processed then return end
@@ -1467,20 +1782,23 @@ local function openFullscreen(startGameId)
 		end
 	end))
 
-	-- touch: swipe left/right to change dashboard (carousel)
-	table.insert(activeFullscreenConns, UserInputService.TouchSwipe:Connect(function(dir, _, processed)
-		if dir == Enum.SwipeDirection.Left then
-			goNext()
-		elseif dir == Enum.SwipeDirection.Right then
-			goPrev()
-		end
-	end))
+	-- touch navigation only for multi-page boards
+	if not singlePage then
+		-- swipe left/right to change dashboard (carousel)
+		table.insert(activeFullscreenConns, UserInputService.TouchSwipe:Connect(function(dir, _, processed)
+			if dir == Enum.SwipeDirection.Left then
+				goNext()
+			elseif dir == Enum.SwipeDirection.Right then
+				goPrev()
+			end
+		end))
 
-	-- touch: tapping anywhere re-reveals the controls for 2 seconds
-	table.insert(activeFullscreenConns, UserInputService.TouchTap:Connect(function(_, processed)
-		if processed then return end
-		showNav()
-	end))
+		-- tapping anywhere re-reveals the controls for 2 seconds
+		table.insert(activeFullscreenConns, UserInputService.TouchTap:Connect(function(_, processed)
+			if processed then return end
+			showNav()
+		end))
+	end
 
 	activeFullscreenGui = screenGui
 end
@@ -1488,6 +1806,14 @@ end
 -- ----------------------------------------------------------------------------
 -- board lifecycle
 -- ----------------------------------------------------------------------------
+
+-- builds a cheap signature of a feed so we only rebuild the ticker when it changes
+local function feedSignature(items)
+	local n = #items
+	if n == 0 then return "0" end
+	local top = items[1]
+	return n .. "|" .. tostring(top.name) .. "|" .. tostring(top.robux or top.score) .. "|" .. tostring(top.t)
+end
 
 local function refreshBoard(board)
 	if not board.bg or not board.bg.Parent then return end
@@ -1499,6 +1825,26 @@ local function refreshBoard(board)
 	elseif gid == "Money" then
 		local ok, p = pcall(function() return GetMoneyDashboard:InvokeServer() end)
 		renderMoneyDashboard(board.bg, ok and p or emptyMoneyData())
+	elseif gid == "MoneyG" then
+		local ok, p = pcall(function() return GetMoneyDashboard:InvokeServer() end)
+		renderMoneyG(board.bg, ok and p or emptyMoneyData())
+	elseif gid == "RealMoney" then
+		local ok, p = pcall(function() return GetRecentDonations:InvokeServer() end)
+		local items = ok and p or {}
+		-- only rebuild the ticker if the feed actually changed (keeps scroll smooth)
+		local sig = feedSignature(items)
+		if sig ~= board._feedSig then
+			board._feedSig = sig
+			renderRealMoney(board.bg, items)
+		end
+	elseif gid == "RealPlayer" then
+		local ok, p = pcall(function() return GetRecentScores:InvokeServer() end)
+		local items = ok and p or {}
+		local sig = feedSignature(items)
+		if sig ~= board._feedSig then
+			board._feedSig = sig
+			renderRealPlayer(board.bg, items)
+		end
 	elseif gid == "LastMessage" then
 		-- static page, no server call
 		renderLastMessage(board.bg, gid)
@@ -1528,6 +1874,12 @@ local function setupBoard(part)
 		renderGeneralDashboard(bg, emptyGeneralData())
 	elseif gameId == "Money" then
 		renderMoneyDashboard(bg, emptyMoneyData())
+	elseif gameId == "MoneyG" then
+		renderMoneyG(bg, emptyMoneyData())
+	elseif gameId == "RealMoney" then
+		renderRealMoney(bg, {})
+	elseif gameId == "RealPlayer" then
+		renderRealPlayer(bg, {})
 	elseif gameId == "LastMessage" then
 		renderLastMessage(bg, gameId)
 	else
@@ -1539,6 +1891,20 @@ local function setupBoard(part)
 		task.wait(1)
 		refreshBoard(board)
 	end)
+
+	-- live feed boards poll faster (every ~4s) for a near real-time ticker
+	if FEED_BOARDS[gameId] then
+		task.spawn(function()
+			while board.bg and board.bg.Parent do
+				task.wait(4)
+				if activeBoards[part] == board then
+					refreshBoard(board)
+				else
+					break
+				end
+			end
+		end)
+	end
 
 	-- transparent click button on top of SurfaceGui — only opens when the player is near
 	local clickBtn = Instance.new("TextButton")

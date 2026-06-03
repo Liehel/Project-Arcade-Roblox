@@ -35,6 +35,19 @@ local HISTOGRAM_BUCKETS = 20
 local TOP_SCORES_COUNT  = 3
 local CACHE_TTL         = 30
 
+-- live-feed ring buffers (in-memory, newest first) for the bank ticker boards
+local FEED_MAX = 40
+AnalyticsModule._recentScores    = {}  -- { {name, gameId, score, t} ... }
+AnalyticsModule._recentDonations = {}  -- { {name, gameId, robux, t} ... }
+
+-- inserts an item at the front of a ring buffer and trims to FEED_MAX
+local function pushFeed(buffer, item)
+	table.insert(buffer, 1, item)
+	while #buffer > FEED_MAX do
+		table.remove(buffer)
+	end
+end
+
 -- per-game aggregate cache to reduce datastore reads while dashboards are open
 local aggregateCache    = {}
 local cacheLastFetched  = {}
@@ -127,6 +140,9 @@ function AnalyticsModule.ReportSession(data)
 	local gameId   = data.gameId
 	local score    = math.max(0, math.floor(data.score or 0))
 	local timeS    = math.max(0, data.timePlayed or 0)
+
+	-- push to the live scores feed (newest first)
+	pushFeed(AnalyticsModule._recentScores, { name = username, gameId = gameId, score = score, t = os.time() })
 
 	-- track per-player session count and capture before/after counts for retention bucket movement
 	local isFirstSession   = false
@@ -277,6 +293,9 @@ function AnalyticsModule.ReportDonation(data)
 
 	local userId   = data.userId or 0
 	local username = data.username or ("User_" .. tostring(userId))
+
+	-- push to the live donations feed (newest first)
+	pushFeed(AnalyticsModule._recentDonations, { name = username, gameId = data.gameId, robux = robux, t = os.time() })
 
 	local ok, err = pcall(function()
 		AggregatesStore:UpdateAsync("Game_" .. data.gameId, function(existing)
@@ -483,7 +502,9 @@ function AnalyticsModule.GetMoneyDashboard()
 			avgTime          = dash.avgTime,
 			totalTimePlayed  = dash.totalTimePlayed,
 			revenuePerHour   = revPerHour,
-			revenuePerPlayer = dash.uniquePlayers > 0 and (revenue / dash.uniquePlayers) or 0
+			revenuePerPlayer = dash.uniquePlayers > 0 and (revenue / dash.uniquePlayers) or 0,
+			donationHourly   = dash.donationHourly,
+			uniquePlayers    = dash.uniquePlayers
 		})
 
 		totalRevenue  = totalRevenue + revenue
@@ -503,6 +524,24 @@ function AnalyticsModule.GetMoneyDashboard()
 		donationHourly = hourTotal,
 		donationDaily  = dayTotal,
 	}
+end
+
+-- returns the live donations feed (newest first) for the RealMoney board
+function AnalyticsModule.GetRecentDonations()
+	local out = {}
+	for i, e in ipairs(AnalyticsModule._recentDonations) do
+		out[i] = { name = e.name, gameId = e.gameId, robux = e.robux, t = e.t }
+	end
+	return out
+end
+
+-- returns the live scores feed (newest first) for the RealPlayer board
+function AnalyticsModule.GetRecentScores()
+	local out = {}
+	for i, e in ipairs(AnalyticsModule._recentScores) do
+		out[i] = { name = e.name, gameId = e.gameId, score = e.score, t = e.t }
+	end
+	return out
 end
 
 return AnalyticsModule
