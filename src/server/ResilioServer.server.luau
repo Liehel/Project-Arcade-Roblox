@@ -25,6 +25,7 @@ end
 
 local ResilioModule = require(modules:WaitForChild("ResilioModule"))
 local UniversalLeaderboard = require(modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(modules:WaitForChild("AnalyticsModule"))
 
 local sessions: {[Player]: any} = {}
 local loops: {[Player]: RBXScriptConnection} = {}
@@ -82,6 +83,9 @@ local function startSession(player: Player)
 
 	local sessionStart = os.clock()
 	local last = os.clock()
+	local levelTimes = {}
+	local lastLevel = (game.level or game.levelIndex or 1)
+	local levelStart = sessionStart
 
 	loops[player] = RunService.Heartbeat:Connect(function()
 		local now = os.clock()
@@ -90,6 +94,14 @@ local function startSession(player: Player)
 
 		local alive = game:step(dt)
 		local state = game:getState()
+
+		-- detect level transitions to record per-level time
+		local curLevel = state.level or game.level or lastLevel
+		if curLevel ~= lastLevel then
+			levelTimes[lastLevel] = now - levelStart
+			levelStart = now
+			lastLevel = curLevel
+		end
 
 		pcall(function()
 			GameState:FireClient(player, "Update", state)
@@ -100,6 +112,14 @@ local function startSession(player: Player)
 			local finalScore = state.score or 0
 
 			UniversalLeaderboard:ReportScore("Resilio", player, finalScore, durationMs)
+
+			-- close out the final level time
+			levelTimes[lastLevel] = (os.clock() - levelStart)
+
+			AnalyticsModule.ReportSessionAsync(player, "Resilio", finalScore, durationMs / 1000, {
+				levelReached = lastLevel,
+				levelTimes   = levelTimes
+			})
 
 			endSession(player, {
 				score   = finalScore,
@@ -183,6 +203,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	print("donation processed for " .. player.Name .. " (product id: " .. receiptInfo.ProductId .. ")")
+
+	AnalyticsModule.ReportDonationAsync("Resilio", receiptInfo)
+
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 

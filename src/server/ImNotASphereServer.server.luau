@@ -37,6 +37,7 @@ local UpdateLeaderboard = ensureRemote("UpdateImNotASphereLeaderboard", "RemoteE
 
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local UniversalLeaderboardModule = require(Modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
 local SettingsStore = DataStoreService:GetDataStore("ImNotASphere_Settings_v1")
 local PurchaseHistoryStore = DataStoreService:GetDataStore("ImNotASphere_PurchaseHistory_v1")
@@ -127,6 +128,8 @@ MatchStatus.OnServerEvent:Connect(function(player, status, clientScore, clientTi
 			end)
 		end)
 
+		AnalyticsModule.ReportSessionAsync(player, "ImNotASphere", finalScore, serverTime)
+
 		sessions[player] = nil
 	end
 end)
@@ -173,6 +176,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		warn("could not save receipt for " .. player.Name)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+
+	AnalyticsModule.ReportDonationAsync("ImNotASphere", receiptInfo)
 
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end

@@ -17,6 +17,7 @@ local ToggleAudio = remotes:WaitForChild("ToggleAudio")
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local FirmamentSiegeModule = require(Modules:WaitForChild("FirmamentSiegeModule"))
 local UniversalLeaderboardModule = require(Modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
 local SettingsStore = DataStoreService:GetDataStore("FirmamentSiegeSettings_v1")
 local PurchaseHistoryStore = DataStoreService:GetDataStore("FirmamentSiege_PurchaseHistory_v1")
@@ -83,6 +84,8 @@ local function endSession(plr, gameSession, win)
 	pcall(function()
 		UniversalLeaderboardModule:ReportScore("FirmamentSiege", plr, score, timeMs)
 	end)
+
+	AnalyticsModule.ReportSessionAsync(plr, "FirmamentSiege", score, timeInSeconds)
 
 	pcall(function()
 		GameState:FireClient(plr, "End", { score = score, timeMs = timeMs, win = win == true })
@@ -312,6 +315,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		warn("could not save receipt for " .. player.Name)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+
+	AnalyticsModule.ReportDonationAsync("FirmamentSiege", receiptInfo)
 
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end

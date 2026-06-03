@@ -40,6 +40,7 @@ local ToggleAudio     = ensureRemote("ToggleAudio", "RemoteEvent")
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local AvisToucanModule = require(Modules:WaitForChild("AvisToucanModule"))
 local UniversalLeaderboard = require(Modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
 local SettingsStore = DataStoreService:GetDataStore("AvisToucanUserSettings_v1")
 local sessions = {}
@@ -107,6 +108,8 @@ local function startAvisToucanSession(player)
 				UniversalLeaderboard:ReportScore("AvisToucan", player, gameInstance.score, elapsedMs)
 			end)
 
+			AnalyticsModule.ReportSessionAsync(player, "AvisToucan", gameInstance.score or 0, elapsedMs / 1000)
+
 			local finalState = gameInstance:serialize()
 			GameState:FireClient(player, "End", {
 				score = finalState.score,
@@ -166,6 +169,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	print("donation processed for " .. player.Name .. " (product id: " .. receiptInfo.ProductId .. ")")
+
+	AnalyticsModule.ReportDonationAsync("AvisToucan", receiptInfo)
+
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 

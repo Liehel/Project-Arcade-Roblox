@@ -37,6 +37,7 @@ local UpdateLeaderboard = ensureRemote("UpdateTapAndHoldLeaderboard", "RemoteEve
 
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local UniversalLeaderboardModule = require(Modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
 local SettingsStore = DataStoreService:GetDataStore("TapAndHold_Settings_v1")
 local PurchaseHistoryStore = DataStoreService:GetDataStore("TapAndHold_PurchaseHistory_v1")
@@ -131,6 +132,8 @@ MatchStatus.OnServerEvent:Connect(function(player, status, clientScore, clientTi
 			end)
 		end)
 
+		AnalyticsModule.ReportSessionAsync(player, "TapAndHold", finalScore, serverTime)
+
 		sessions[player] = nil
 	end
 end)
@@ -177,6 +180,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		warn("could not save receipt for " .. player.Name)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+
+	AnalyticsModule.ReportDonationAsync("TapAndHold", receiptInfo)
 
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end

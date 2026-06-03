@@ -37,6 +37,7 @@ end
 local FoxyModule = require(foxyLogicModule)
 
 local UniversalLeaderboard = require(Modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
 local SettingsStore = DataStoreService:GetDataStore("FoxyFruitSettings_v1")
 local PurchaseHistoryStore = DataStoreService:GetDataStore("FoxyFruit_PurchaseHistory_v1")
@@ -111,7 +112,13 @@ local function startSession(plr)
 	local foxyGame = FoxyModule.new()
 	local state = foxyGame:getState()
 
-	sessions[plr] = { foxyGame = foxyGame, timeMs = 0 }
+	sessions[plr] = {
+		foxyGame      = foxyGame,
+		timeMs        = 0,
+		lastLevel     = foxyGame.level or 1,
+		levelStartMs  = 0,
+		levelTimes    = {}
+	}
 	playerRateLimits[plr] = { count = 0, lastTick = os.clock() }
 
 	GameState:FireClient(plr, "Start", state)
@@ -148,6 +155,14 @@ local function finishSession(plr, win)
 		}
 		task.spawn(function() UpdateUniversalLeaderboard:FireAllClients(payload) end)
 	end
+
+	-- close the timer for the final level reached and report the session
+	local finalLevel = (foxyGame and foxyGame.level) or session.lastLevel or 1
+	session.levelTimes[finalLevel] = (session.timeMs - (session.levelStartMs or 0)) / 1000
+	AnalyticsModule.ReportSessionAsync(plr, "FoxyFruit", score, timeInSeconds, {
+		levelReached = finalLevel,
+		levelTimes   = session.levelTimes
+	})
 
 	GameState:FireClient(plr, "End", { score = score, win = win })
 	sessions[plr] = nil
@@ -194,6 +209,15 @@ RunService.Heartbeat:Connect(function(dt)
 		if foxyGame then
 			session.timeMs = (session.timeMs or 0) + dt * 1000
 			pcall(function() foxyGame:update(dt) end)
+
+			-- detect level transitions to record per-level times
+			local curLevel = foxyGame.level or session.lastLevel or 1
+			if curLevel ~= session.lastLevel then
+				local elapsed = (session.timeMs - (session.levelStartMs or 0)) / 1000
+				session.levelTimes[session.lastLevel] = elapsed
+				session.levelStartMs = session.timeMs
+				session.lastLevel = curLevel
+			end
 
 			if foxyGame.win then
 				finishSession(plr, true)
@@ -247,6 +271,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		warn("could not save receipt for " .. player.Name)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+
+	AnalyticsModule.ReportDonationAsync("FoxyFruit", receiptInfo)
 
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end

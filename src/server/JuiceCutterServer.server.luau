@@ -19,6 +19,7 @@ local ToggleAudio = folder:WaitForChild("ToggleAudio")
 
 local JuiceCutterModule = require(modules:WaitForChild("JuiceCutterModule"))
 local UniversalLeaderboardModule = require(modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(modules:WaitForChild("AnalyticsModule"))
 
 local MAX_LEVEL = 5
 local sessions = {}
@@ -95,6 +96,8 @@ local function startLoop(player)
 	stopLoopFor(player)
 
 	s.sessionStart = s.sessionStart or os.clock()
+	s.levelStartTime = os.clock()
+	s.levelTimes = s.levelTimes or {}
 	s.lastTick = os.clock()
 
 	s.loop = RunService.Heartbeat:Connect(function()
@@ -129,6 +132,9 @@ local function startLoop(player)
 			local isPerfect = (state.perfect == true)
 
 			if isPerfect and currentLevel < MAX_LEVEL then
+				-- record per-level time before pausing the loop
+				s.levelTimes[currentLevel] = os.clock() - (s.levelStartTime or os.clock())
+
 				s.waitingNextLevel = true
 				stopLoopFor(player)
 
@@ -142,12 +148,20 @@ local function startLoop(player)
 				return
 			end
 
+			-- record time for the final level played
+			s.levelTimes[currentLevel] = os.clock() - (s.levelStartTime or os.clock())
+
 			local endTime = os.clock()
 			local startTime = s.sessionStart or endTime
 			local durationMs = math.floor((endTime - startTime) * 1000)
 			local finalScore = s.totalScore or 0
 
 			reportLeaderboard(player, finalScore, durationMs)
+
+			AnalyticsModule.ReportSessionAsync(player, "JuiceCutter", finalScore, endTime - startTime, {
+				levelReached = currentLevel,
+				levelTimes   = s.levelTimes
+			})
 
 			fireSafe(player, "End", {
 				score   = finalScore,
@@ -351,6 +365,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		warn("could not save receipt for " .. player.Name)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+
+	AnalyticsModule.ReportDonationAsync("JuiceCutter", receiptInfo)
 
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end

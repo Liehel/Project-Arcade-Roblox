@@ -39,6 +39,7 @@ local UpdateUniversalLeaderboard = ensureRemote(ArcadeRemotes, "UpdateUniversalL
 
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local OxybelisModule = require(Modules:WaitForChild("OxybelisModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 local UniversalLeaderboard = nil
 
 local okLb, lib = pcall(function()
@@ -118,6 +119,8 @@ local function startOxybelis(player)
 				end)
 				if okTop then top = resultTop end
 			end
+
+			AnalyticsModule.ReportSessionAsync(player, "Oxybelis", game.score or 0, elapsedMs / 1000)
 
 			pcall(function()
 				GameState:FireClient(player, "End", {
@@ -216,6 +219,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 	end
 
 	print("donation processed for " .. player.Name .. " (product id: " .. receiptInfo.ProductId .. ")")
+
+	AnalyticsModule.ReportDonationAsync("Oxybelis", receiptInfo)
+
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 

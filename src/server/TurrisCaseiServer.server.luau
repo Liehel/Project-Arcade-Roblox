@@ -37,6 +37,7 @@ local GetAudioState = ensureRemote("GetAudioState", "RemoteFunction")
 
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local UniversalLeaderboardModule = require(Modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
 local SettingsStore = DataStoreService:GetDataStore("TurrisUser_Settings_v1")
 local PurchaseHistoryStore = DataStoreService:GetDataStore("TurrisCasei_PurchaseHistory_v1")
@@ -105,6 +106,8 @@ MatchStatus.OnServerEvent:Connect(function(player, status, clientScore, clientTi
 			end)
 		end)
 
+		AnalyticsModule.ReportSessionAsync(player, "TurrisCasei", finalScore, serverTime)
+
 		sessions[player] = nil
 	end
 end)
@@ -128,6 +131,9 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 
 	local setSuccess, errorMessage = pcall(function() PurchaseHistoryStore:SetAsync(purchaseKey, true) end)
 	if not setSuccess then return Enum.ProductPurchaseDecision.NotProcessedYet end
+
+	AnalyticsModule.ReportDonationAsync("TurrisCasei", receiptInfo)
+
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 

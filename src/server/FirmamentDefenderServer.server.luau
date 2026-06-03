@@ -15,6 +15,7 @@ local ToggleAudio = remotes:WaitForChild("ToggleAudio")
 local Modules = ReplicatedStorage:WaitForChild("Modules")
 local FirmamentModule = require(Modules:WaitForChild("FirmamentDefenderModule"))
 local UniversalLeaderboard = require(Modules:WaitForChild("UniversalLeaderboardModule"))
+local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
 local SettingsStore = DataStoreService:GetDataStore("SkyDefenderSettings_v1")
 local PurchaseHistoryStore = DataStoreService:GetDataStore("FirmamentDefender_PurchaseHistory_v1")
@@ -145,6 +146,10 @@ RunService.Heartbeat:Connect(function(dt)
 
 			UniversalLeaderboard:ReportScore("FirmamentDefender", plr, score, timeMs)
 
+			AnalyticsModule.ReportSessionAsync(plr, "FirmamentDefender", score, game.timePlayed or 0, {
+				levelReached = game.wave or 1
+			})
+
 			GameState:FireClient(plr, "End", { score = score, win = game.win })
 			sessions[plr] = nil
 		else
@@ -202,6 +207,8 @@ MarketplaceService.ProcessReceipt = function(receiptInfo)
 		warn("could not save receipt for " .. player.Name)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
+
+	AnalyticsModule.ReportDonationAsync("FirmamentDefender", receiptInfo)
 
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
