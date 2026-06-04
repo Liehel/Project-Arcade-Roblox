@@ -385,27 +385,32 @@ end
 -- header builder
 -- ----------------------------------------------------------------------------
 
-local function buildHeader(parent, title, subtitle, accent)
+local function buildHeader(parent, title, subtitle, accent, centered)
 	local hdr = mkFrame(parent, {
 		Position = UDim2.fromOffset(MARGIN, 18),
 		Size = UDim2.new(1, -MARGIN*2, 0, 178),
 		BackgroundTransparency = 1
 	})
 
+	local align = centered and Enum.TextXAlignment.Center or Enum.TextXAlignment.Left
+
 	mkLabel(hdr, title, {
 		Size = UDim2.new(1,0,0,118),
 		TextColor3 = PALETTE.text,
-		Font = Enum.Font.GothamBold, TextSize = FS.header
+		Font = Enum.Font.GothamBold, TextSize = FS.header,
+		TextXAlignment = align
 	})
 	mkLabel(hdr, subtitle, {
 		Position = UDim2.fromOffset(0, 122),
 		Size = UDim2.new(1,0,0,40),
 		TextColor3 = PALETTE.textDim,
-		Font = Enum.Font.Gotham, TextSize = FS.subhead
+		Font = Enum.Font.Gotham, TextSize = FS.subhead,
+		TextXAlignment = align
 	})
 
+	-- accent underline: left-anchored normally, centered when requested
 	local ul = mkFrame(hdr, {
-		Position = UDim2.fromOffset(0, 168),
+		Position = centered and UDim2.new(0.5, -45, 0, 168) or UDim2.fromOffset(0, 168),
 		Size = UDim2.fromOffset(90, 6),
 		BackgroundColor3 = accent or PALETTE.primary
 	})
@@ -1234,7 +1239,7 @@ local function renderRealMoney(bg, items)
 	items = items or {}
 
 	buildHeader(bg, "LIVE DONATIONS",
-		"Real-time feed of player contributions across all games", PALETTE.gold)
+		"Real-time feed of player contributions across all games", PALETTE.gold, true)
 
 	-- live dot
 	local dot = mkFrame(bg, {
@@ -1277,7 +1282,7 @@ local function renderRealPlayer(bg, items)
 	items = items or {}
 
 	buildHeader(bg, "LIVE SCORES",
-		"Real-time feed of recent matches across all games", PALETTE.secondary)
+		"Real-time feed of recent matches across all games", PALETTE.secondary, true)
 
 	local dot = mkFrame(bg, {
 		Position = UDim2.fromOffset(SW - MARGIN - 220, 60),
@@ -1322,7 +1327,7 @@ local function renderMoneyG(bg, payload)
 	buildHeader(bg, "REVENUE BY GAME",
 		string.format("Live revenue breakdown  ·  R$ %s total across %d games",
 			fmtNum(totalRev), #games),
-		PALETTE.gold)
+		PALETTE.gold, true)
 
 	-- 5 columns x 2 rows grid
 	local cols, rows = 5, 2
