@@ -58,13 +58,13 @@ The project takes inspiration from games like **"Are You OK?"**, where the exper
 
 | # | Game Name | Genre / Mechanic | Key Feature |
 |---|-----------|-------------|-------------|
-| 1 | 🐍 **Oxybelis** | Snake | Circular buffer, O(1) logic |
-| 2 | 🐦 **Avis Toucan** | Flappy Bird | Gravity tuning, "game feel" |
-| 3 | 🧱 **Resilio** | Arkanoid | Vector reflection, power-ups |
-| 4 | 🦊 **Foxy Fruit** | Pac-Man | BFS ghost AI (4 behaviors) |
-| 5 | 🚀 **Firmament Defender** | Space Invaders | Swarm logic, shields |
-| 6 | ☄️ **Firmament Siege** | Asteroids | Inertia physics, 360° movement |
-| 7 | 🍊 **Juice Cutter** | Fruit Ninja | Recipe system, line-segment collision |
+| 1 | 🐍 **Oxybelis** | -| Circular buffer, O(1) logic |
+| 2 | 🐦 **Avis Toucan** | - | Gravity tuning, "game feel" |
+| 3 | 🧱 **Resilio** | -| Vector reflection, power-ups |
+| 4 | 🦊 **Foxy Fruit** | - | BFS ghost AI (4 behaviors) |
+| 5 | 🚀 **Firmament Defender** | - | Swarm logic, shields |
+| 6 | ☄️ **Firmament Siege** | - | Inertia physics, 360° movement |
+| 7 | 🍊 **Juice Cutter** | - | Recipe system, line-segment collision |
 
 ---
 
@@ -72,9 +72,9 @@ The project takes inspiration from games like **"Are You OK?"**, where the exper
 
 | # | Game Name | Genre / Mechanic | Key Feature |
 |---|-----------|-------------|-------------|
-| 8 | 🧀 **Turris Casei** | Stack | Block slicing math, multiplayer |
-| 9 | 🚀 **Tap And Hold** | Tiao Yi Tiao | Parabolic jump physics, multiplayer |
-| 10 | 🔵 **ImNotASphere** | Marble games | Moving platforms, power-ups, multiplayer |
+| 8 | 🧀 **Turris Casei** | - | Block slicing math, multiplayer |
+| 9 | 🚀 **Tap And Hold** | - | Parabolic jump physics, multiplayer |
+| 10 | 🔵 **ImNotASphere** | - | Moving platforms, power-ups, multiplayer |
 
 ---
 
@@ -154,12 +154,3 @@ This project is the foundation for learning game development. The next step is *
 | 🎮 Xbox Support |![100%](https://img.shields.io/badge/Logic-100%25-brightgreen) |
 | 🎮 Playstation Support |![100%](https://img.shields.io/badge/Logic-100%25-brightgreen) |
 
-
----
-
-<div align="center">
-
-
-**[▶ Play on Roblox](#)** &nbsp;|&nbsp; **[📄 Full Documentation — Coming Soon](#)**
-
-</div>
