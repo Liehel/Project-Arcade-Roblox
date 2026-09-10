@@ -16,6 +16,20 @@ if not OpenArcadeMenu then
 	return
 end
 
+
+-- Antes de meter a nadie en un juego, apuntamos donde estaba plantado. Al salir
+-- el personaje suele caer por debajo de MIN_Y y RespawnSystem lo mandaba al
+-- spawn de la isla; con esto vuelve justo delante de la maquina que uso.
+local ARCADE_RETURN_ATTR = "ArcadeReturnCF"
+
+local function rememberReturn(player)
+	local char = player.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		player:SetAttribute(ARCADE_RETURN_ATTR, hrp.CFrame)
+	end
+end
+
 -- returns the first basepart inside a descriptor or model
 local function firstBasePartIn(desc)
 	if desc:IsA("BasePart") then return desc end
@@ -39,6 +53,7 @@ local function setupButtonForGame(inst, gameName, displayName)
 	click.MaxActivationDistance = 10
 	click.Parent = part
 	click.MouseClick:Connect(function(player)
+		rememberReturn(player)
 		OpenArcadeMenu:FireClient(player, gameName)
 	end)
 
@@ -50,6 +65,7 @@ local function setupButtonForGame(inst, gameName, displayName)
 	prompt.MaxActivationDistance = 12
 	prompt.Parent = part
 	prompt.Triggered:Connect(function(player)
+		rememberReturn(player)
 		OpenArcadeMenu:FireClient(player, gameName)
 	end)
 end

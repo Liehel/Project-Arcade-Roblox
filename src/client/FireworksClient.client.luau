@@ -402,9 +402,15 @@ rPlay.OnClientEvent:Connect(function(index, origin, launcher)
 	local def = FireworksModule.Types[index]
 	if not def then return end
 
+	-- Top-bar toggle (FireworksToggle): when off, other people's launches are
+	-- skipped entirely - no particles, no toast, no sky darkening. Your own
+	-- fireworks always play.
+	local mine = (launcher == player)
+	if not mine and player:GetAttribute("FireworksGlobalOn") == false then return end
+
 	local tracker = { part = nil, exploded = false, explodePos = origin }
 
-	if launcher == player then
+	if mine then
 		playCinematic(origin, def, tracker)  -- only the launcher gets the camera
 	elseif launcher then
 		showToast(launcher.Name .. "  -  " .. def.name)

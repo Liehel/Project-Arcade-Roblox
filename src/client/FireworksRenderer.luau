@@ -60,6 +60,56 @@ local function colorSeq(colors)
 	return ColorSequence.new(kp)
 end
 
+local function lighten(c, f)
+	return Color3.new(c.R + (1 - c.R) * f, c.G + (1 - c.G) * f, c.B + (1 - c.B) * f)
+end
+
+-- White-hot head that cools into the firework's palette. Real fireworks burn
+-- white at ignition and only show their colour as they cool; faking that curve
+-- is most of why these read as fireworks instead of coloured confetti.
+-- Costs nothing: same particles, better ColorSequence.
+local function hotSeq(colors)
+	local kp = {
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 248)),
+		ColorSequenceKeypoint.new(0.10, lighten(colors[1], 0.62)),
+	}
+	local n = #colors
+	for i = 1, n do
+		kp[#kp + 1] = ColorSequenceKeypoint.new(math.min(0.10 + 0.82 * (i / n), 0.97), colors[i])
+	end
+	kp[#kp + 1] = ColorSequenceKeypoint.new(1, colors[n])
+	return ColorSequence.new(kp)
+end
+
+-- ── Shockwave (one neon sphere, pooled) ───────────────────────────────────
+-- A single expanding part per burst. Enormous visual payoff for 1 instance.
+local wavePool = {}
+local function newWavePart()
+	local p = Instance.new("Part")
+	p.Shape = Enum.PartType.Ball; p.Size = Vector3.new(1, 1, 1)
+	p.Material = Enum.Material.Neon; p.Anchored = true
+	p.CanCollide = false; p.CanQuery = false; p.CanTouch = false
+	p.CastShadow = false; p.Locked = true; p.Transparency = 1
+	p.Parent = effectsFolder
+	return p
+end
+
+local function shockwave(center, radius, color, dur)
+	if TIER == "mobile" and radius < 34 then return end  -- phones: only the big ones
+	local p = table.remove(wavePool) or newWavePart()
+	p.Color = color
+	p.Position = center
+	p.Size = Vector3.new(2, 2, 2)
+	p.Transparency = 0.55
+	TweenService:Create(p, TweenInfo.new(dur, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+		Size = Vector3.new(radius, radius, radius), Transparency = 1,
+	}):Play()
+	task.delay(dur + 0.06, function()
+		p.Transparency = 1
+		table.insert(wavePool, p)
+	end)
+end
+
 -- Flicker transparency for strobe (alternating visible / invisible)
 local STROBE_SEQ do
 	local kp = {}
@@ -89,12 +139,19 @@ local function newBurstPart()
 	part.CanCollide = false; part.CanQuery = false; part.CanTouch = false
 	part.CastShadow = false; part.Locked = true
 
-	local e = Instance.new("ParticleEmitter")
-	e.Name = "Burst"; e.Enabled = false
-	e.Texture = SPARK_TEX
-	e.LightEmission = 1; e.LightInfluence = 0
-	e.Rotation = NumberRange.new(0, 360)
-	e.Parent = part
+	-- Three layers per burst: a brief white core, the coloured petals, and a
+	-- slow twinkling ember tail. They SPLIT the old particle budget instead of
+	-- adding to it, so a burst costs the same (less on mobile, which skips
+	-- the ember layer) while reading far richer.
+	for _, layer in ipairs({ "Burst", "Core", "Glitter", "Pistil" }) do
+		local e = Instance.new("ParticleEmitter")
+		e.Name = layer; e.Enabled = false
+		e.Texture = SPARK_TEX
+		e.LightEmission = 1; e.LightInfluence = 0
+		e.Rotation = NumberRange.new(0, 360)
+		pcall(function() e.Brightness = 2.6 end)  -- HDR bloom, free
+		e.Parent = part
+	end
 
 	if USE_LIGHTS then
 		local l = Instance.new("PointLight")
@@ -108,7 +165,9 @@ end
 
 local function acquireBurst() return table.remove(burstPool) or newBurstPart() end
 local function releaseBurst(part)
-	local e = part:FindFirstChild("Burst"); if e then e.Enabled = false end
+	for _, layer in ipairs({ "Burst", "Core", "Glitter", "Pistil" }) do
+		local e = part:FindFirstChild(layer); if e then e.Enabled = false end
+	end
 	local l = part:FindFirstChild("Glow");  if l then l.Brightness = 0 end
 	table.insert(burstPool, part)
 end
@@ -119,12 +178,18 @@ local function explode(def, position, sizeMul, overrides)
 	overrides = overrides or {}
 	local part = acquireBurst()
 	part.Position = position
-	local e = part.Burst
-	local s = (def.size or 1) * sizeMul * SIZE_SCALE
-	local spd = (def.speed or 50) * WIDTH_SCALE  -- wider bursts
+	local cols = overrides.colors or def.colors
+	local s    = (def.size or 1) * sizeMul * SIZE_SCALE
+	local spd  = (def.speed or 50) * WIDTH_SCALE  -- wider bursts
+	local life = def.lifetime or 1.5
 
-	e.Color        = colorSeq(overrides.colors or def.colors)
-	e.Lifetime     = NumberRange.new((def.lifetime or 1.5) * 0.7, def.lifetime or 1.5)
+	-- Same budget as before, split across the three layers.
+	local budget = math.max(8, math.floor((def.count or 120) * sizeMul * QUALITY))
+
+	-- ── Layer 1: the coloured petals (the shape you actually recognise) ──
+	local e = part.Burst
+	e.Color        = hotSeq(cols)
+	e.Lifetime     = NumberRange.new(life * 0.72, life)
 	e.Speed        = NumberRange.new(spd * sizeMul * 0.6, spd * sizeMul)
 	e.SpreadAngle  = Vector2.new(def.spread or 175, def.spread or 175)
 	e.Acceleration = Vector3.new(0, def.accelY or -25, 0)
@@ -133,33 +198,91 @@ local function explode(def, position, sizeMul, overrides)
 	e.Squash       = NumberSequence.new(def.squash or 0)
 	e.RotSpeed     = def.erratic and NumberRange.new(-200, 200) or NumberRange.new(0)
 	e.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, s),
+		NumberSequenceKeypoint.new(0, s * 1.15),
+		NumberSequenceKeypoint.new(0.18, s),
 		NumberSequenceKeypoint.new(0.65, s * 0.55),
 		NumberSequenceKeypoint.new(1, 0),
 	})
 	e.Transparency = def.strobe and STROBE_SEQ or FADE_SEQ
+	e:Emit(math.floor(budget * 0.70))
 
-	local count = math.max(8, math.floor((def.count or 120) * sizeMul * QUALITY))
-	e:Emit(count)
+	-- ── Layer 2: the ignition flash, a dense white core that dies fast ──
+	local core = part.Core
+	core.Color        = ColorSequence.new(Color3.fromRGB(255, 255, 245), lighten(cols[1], 0.5))
+	core.Lifetime     = NumberRange.new(0.16, 0.36)
+	core.Speed        = NumberRange.new(spd * sizeMul * 0.08, spd * sizeMul * 0.32)
+	core.SpreadAngle  = Vector2.new(180, 180)
+	core.Acceleration = Vector3.new(0, 0, 0)
+	core.Drag         = 8
+	core.Squash       = NumberSequence.new(0)
+	core.RotSpeed     = NumberRange.new(0)
+	core.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, s * 1.9),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	core.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	core:Emit(math.floor(budget * 0.15))
 
-	-- Pistil: bright dense core (palm)
+	-- ── Layer 3: embers that hang and twinkle after the petals die ──
+	-- The lingering sparkle is what sells the whole thing. Phones skip it.
+	if TIER ~= "mobile" then
+		local g = part.Glitter
+		g.Color        = ColorSequence.new(lighten(cols[#cols], 0.30))
+		g.Lifetime     = NumberRange.new(life * 1.15, life * 1.95)
+		g.Speed        = NumberRange.new(spd * sizeMul * 0.18, spd * sizeMul * 0.7)
+		g.SpreadAngle  = Vector2.new(180, 180)
+		g.Acceleration = Vector3.new(0, (def.accelY or -25) * 0.5, 0)
+		g.Drag         = (def.drag or 2) + 1.8
+		g.Squash       = NumberSequence.new(0)
+		g.RotSpeed     = NumberRange.new(-120, 120)
+		g.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, s * 0.42),
+			NumberSequenceKeypoint.new(0.5, s * 0.3),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		g.Transparency = STROBE_SEQ
+		g:Emit(math.floor(budget * 0.15))
+	end
+
+	-- ── Expanding shockwave: one part, reads as the concussion ──
+	shockwave(position, spd * sizeMul * 0.17 + s * 2.5, lighten(cols[1], 0.35),
+		0.40 + 0.10 * sizeMul)
+
+	-- Pistil: bright dense inner flower (palm). Its own emitter on purpose -
+	-- Roblox reads emitter properties live for particles already in flight, so
+	-- reusing Core here would repaint the ignition flash mid-burn.
 	if def.pistil then
-		e.Speed = NumberRange.new(6, 16)
-		e.Squash = NumberSequence.new(0)
-		e.Color = ColorSequence.new(Color3.fromRGB(150, 215, 255))
-		e:Emit(math.floor(count * 0.5))
+		local p2 = part.Pistil
+		p2.Color        = ColorSequence.new(Color3.fromRGB(210, 240, 255), Color3.fromRGB(140, 205, 255))
+		p2.Lifetime     = NumberRange.new(life * 0.5, life * 0.85)
+		p2.Speed        = NumberRange.new(6, 20)
+		p2.SpreadAngle  = Vector2.new(180, 180)
+		p2.Acceleration = Vector3.new(0, (def.accelY or -25) * 0.4, 0)
+		p2.Drag         = 3
+		p2.Squash       = NumberSequence.new(0)
+		p2.Size = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, s * 0.85),
+			NumberSequenceKeypoint.new(1, 0),
+		})
+		p2.Transparency = FADE_SEQ
+		p2:Emit(math.floor(budget * 0.30))
 	end
 
 	-- glow (skipped on mobile)
 	local l = part:FindFirstChild("Glow")
 	if l then
-		l.Color = (overrides.colors or def.colors)[1]
-		l.Brightness = 6 * sizeMul
-		l.Range = math.clamp(28 * sizeMul, 16, 60)
-		TweenService:Create(l, TweenInfo.new(0.6), { Brightness = 0 }):Play()
+		l.Color = cols[1]
+		l.Brightness = 7 * sizeMul
+		l.Range = math.clamp(30 * sizeMul, 16, 64)
+		TweenService:Create(l, TweenInfo.new(0.55), { Brightness = 0 }):Play()
 	end
 
-	task.delay((def.lifetime or 1.5) + 0.6, releaseBurst, part)
+	-- hold the part until the longest-lived layer has finished
+	local hold = ((TIER ~= "mobile") and life * 1.95 or life) + 0.6
+	task.delay(hold, releaseBurst, part)
 	return part
 end
 
@@ -184,6 +307,30 @@ local function newShell()
 	t.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.1), NumberSequenceKeypoint.new(1, 1) })
 	t.Parent = part
 
+	-- Crackling sparks shed during the climb. A rising shell used to be a bare
+	-- dot with a streak; this makes the ascent worth watching too.
+	local sp = Instance.new("ParticleEmitter")
+	sp.Name = "Sparks"; sp.Enabled = false
+	sp.Texture = SPARK_TEX
+	sp.LightEmission = 1; sp.LightInfluence = 0
+	sp.Lifetime = NumberRange.new(0.22, 0.55)
+	sp.Speed = NumberRange.new(1, 7)
+	sp.SpreadAngle = Vector2.new(180, 180)
+	sp.Acceleration = Vector3.new(0, -34, 0)
+	sp.Drag = 1.5
+	sp.Rotation = NumberRange.new(0, 360)
+	sp.RotSpeed = NumberRange.new(-160, 160)
+	sp.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1.3),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	sp.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.1),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	pcall(function() sp.Brightness = 2.6 end)
+	sp.Parent = part
+
 	part.Parent = effectsFolder
 	return part
 end
@@ -191,6 +338,7 @@ end
 local function acquireShell() return table.remove(shellPool) or newShell() end
 local function releaseShell(part)
 	local t = part:FindFirstChild("Trail"); if t then t.Enabled = false; t:Clear() end
+	local sp = part:FindFirstChild("Sparks"); if sp then sp.Enabled = false end
 	table.insert(shellPool, part)
 end
 
@@ -212,6 +360,15 @@ local function riseShell(def, origin, onArrive, tracker)
 		NumberSequenceKeypoint.new(1, 0),
 	})
 	t.Enabled = true
+
+	if not a.silent then
+		local sp = shell:FindFirstChild("Sparks")
+		if sp then
+			sp.Color = ColorSequence.new(lighten(def.swatch, 0.45), def.swatch)
+			sp.Rate = math.floor(70 * QUALITY * (a.trail or 1))
+			sp.Enabled = true
+		end
+	end
 
 	local riseTime = (a.speed or 1) * rand(0.85, 1.0)
 	local tw = TweenService:Create(shell, TweenInfo.new(riseTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {

@@ -36,10 +36,23 @@ local function getSpawnCFrame()
 end
 
 -- moves a character to the respawn point and clears its velocity
+local ARCADE_RETURN_ATTR = "ArcadeReturnCF"
+
 local function sendToSpawn(character)
 	local hrp = character:FindFirstChild("HumanoidRootPart")
 	if not hrp then return end
-	hrp.CFrame = getSpawnCFrame()
+
+	-- Si venia de una maquina de arcade, devolverlo delante de ella en vez de
+	-- al spawn de la isla. ArcadeServer apunta la posicion al entrar y aqui se
+	-- consume una sola vez, asi que la siguiente muerte normal vuelve al spawn.
+	local player = Players:GetPlayerFromCharacter(character)
+	local back = player and player:GetAttribute(ARCADE_RETURN_ATTR)
+	if back then
+		player:SetAttribute(ARCADE_RETURN_ATTR, nil)
+		hrp.CFrame = back
+	else
+		hrp.CFrame = getSpawnCFrame()
+	end
 	hrp.AssemblyLinearVelocity  = Vector3.zero
 	hrp.AssemblyAngularVelocity = Vector3.zero
 end

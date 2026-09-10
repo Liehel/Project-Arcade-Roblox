@@ -1,39 +1,28 @@
--- Adds a sparkle emitter to every part tagged "ShoreGlow" (the shoreline edge).
-local CollectionService = game:GetService("CollectionService")
-local GLOW_TAG = "ShoreGlow"
-local GLOW_COLOR = Color3.fromRGB(185, 70, 255)
+-- Shoreline edge parts (tag "ShoreGlow").
+--
+-- Estas partes son marcadores invisibles del borde de la isla: el juego las
+-- necesita ocultas, no visibles. Antes ademas les colgaba un ParticleEmitter
+-- con Rate = 400, que con Lifetime de hasta 2.6s daban ~1000 particulas VIVAS
+-- por cada parte etiquetada, siempre, mirara el jugador o no. Ese efecto se
+-- retiro por peticion; aqui solo queda el ocultado.
+--
+-- Si en algun momento quieres recuperar el brillo, hazlo con Rate bajo (unos
+-- 90 en PC y 30 en movil), nunca con 400.
 
--- hide the part and attach the sparkle emitter
+local CollectionService = game:GetService("CollectionService")
+
+local GLOW_TAG = "ShoreGlow"
+
 local function track(part)
 	if not part:IsA("BasePart") then return end
-	if part:FindFirstChild("ShoreSparkle") then return end
 
 	part.Transparency = 1
 	part.CanCollide   = false
 	part.CastShadow   = false
 
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Name          = "ShoreSparkle"
-	emitter.Texture       = "rbxasset://textures/particles/sparkles_main.dds"
-	emitter.Color         = ColorSequence.new(GLOW_COLOR)
-	emitter.LightEmission  = 1
-	emitter.LightInfluence = 0
-	emitter.Speed         = NumberRange.new(0)
-	emitter.Rotation      = NumberRange.new(0, 360)
-	emitter.Lifetime      = NumberRange.new(1.0, 2.6)  
-	emitter.Rate          = 400                       
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0),
-		NumberSequenceKeypoint.new(0.5, 0.45),
-		NumberSequenceKeypoint.new(1, 0),
-	})
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 1),
-		NumberSequenceKeypoint.new(0.3, 0.1),
-		NumberSequenceKeypoint.new(0.7, 0.1),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Parent = part
+	-- limpia el emisor antiguo si el place todavia lo trae guardado
+	local old = part:FindFirstChild("ShoreSparkle")
+	if old then old:Destroy() end
 end
 
 for _, p in ipairs(CollectionService:GetTagged(GLOW_TAG)) do track(p) end
