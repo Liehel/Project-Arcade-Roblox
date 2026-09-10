@@ -75,6 +75,27 @@ local localPlayerFinished = false
 local currentLevelFolder = nil
 local currentLevelNum = 1
 
+-- ============================================================================
+-- TRANSICION DE NIVELES  <-- EDITA AQUI
+-- ----------------------------------------------------------------------------
+-- Estos dos ajustes controlan TODA la progresion de niveles del juego.
+--
+--   START_LEVEL : con que nivel arranca la partida.
+--   NEXT_LEVEL  : a que nivel se pasa al tocar la meta con todas las monedas.
+--
+-- Progresion: Level1 -> 2 -> 3 -> 4 -> 5. Al terminar el 5 no existe Level6,
+-- asi que la partida termina sola.
+--
+-- Para probar un nivel suelto, pon por ejemplo START_LEVEL = 3.
+-- ============================================================================
+local START_LEVEL = 1
+
+local function NEXT_LEVEL(actual)
+	return actual + 1
+end
+-- ============================================================================
+
+
 local gameData = {
 	score = 0, coinsCollected = {}, activePowers = {}, powerupCoroutines = {}, storedPower = nil,
 	startTime = 0, spherePart = nil, camProxy = nil, vectorForce = nil, angularVelocity = nil,
@@ -95,7 +116,7 @@ local hudGui = nil
 local hudScoreLabel, hudCoinsLabel, hudActivePowerLabel, hudMuteBtn
 local versusGui = nil
 
-local Setup3DGame, LoadLevel, FullQuitGame, DieAndRespawn
+local Setup3DGame, LoadLevel, FullQuitGame, DieAndRespawn, RebuildSphere
 
 -- floats a styled text label above a part and fades it out
 local function ShowFloatingText(text, color, targetPart)
@@ -210,7 +231,7 @@ local function InyectarConfiguracionSphere()
 
 		local loadGui = Instance.new("ScreenGui", playerGui)
 		showLoadingOverlay(loadGui, "LOADING MAP & LIGHTS...")
-		currentLevelNum = 1
+		currentLevelNum = START_LEVEL   -- <-- nivel inicial (ver bloque de arriba)
 		local success = LoadLevel(currentLevelNum)
 		if success and currentLevelFolder then PreloadLevelAssets(currentLevelFolder); task.wait(2.0) end
 		loadGui:Destroy()
@@ -495,30 +516,37 @@ local function HandleSphereCollision(hit)
 	elseif itemName == "DeathPit" or hit.Name == "DeathPit" then
 		DieAndRespawn()
 	elseif hit.Name == "FinishLine0Finishline" or hit.Name == "FinishLine" then
-		-- [DIAG] trazas temporales para el fallo de paso al nivel 2
-		print("[SPHERE] meta tocada | monedas=" .. #gameData.coinsCollected
-			.. "/" .. #SphereModule.GameConfig.RequiredCoins
-			.. " | nivel actual=" .. tostring(currentLevelNum))
 		if #gameData.coinsCollected >= #SphereModule.GameConfig.RequiredCoins then
-			currentLevelNum = currentLevelNum + 1
+			currentLevelNum = NEXT_LEVEL(currentLevelNum)   -- <-- siguiente nivel (ver bloque de arriba)
 			local nextLevel = Assets:FindFirstChild("Level" .. currentLevelNum)
-			print("[SPHERE] buscando Level" .. currentLevelNum
-				.. " -> " .. (nextLevel and "ENCONTRADO" or "NO EXISTE"))
 			if nextLevel then
 				local prevInGame = inGame
 				inGame = false
 				local loadGui = Instance.new("ScreenGui", playerGui)
 				showLoadingOverlay(loadGui, "LOADING LEVEL " .. currentLevelNum .. "...")
 				local success = LoadLevel(currentLevelNum)
-				print("[SPHERE] LoadLevel(" .. currentLevelNum .. ") = " .. tostring(success))
 				if gameData.spherePart then gameData.spherePart.Anchored = true end
 				if success and currentLevelFolder then PreloadLevelAssets(currentLevelFolder); task.wait(2.5) end
 				if loadGui then loadGui:Destroy() end
-				if gameData.spherePart then
-					gameData.spherePart.Anchored = false
-					gameData.spherePart.AssemblyLinearVelocity = Vector3.new(0, 0.1, 0)
-				end
+				-- La esfera se reconstruye entera, igual que al empezar la partida.
+				-- Reutilizar la vieja dejaba su assembly de fisica dormida y se
+				-- quedaba flotando inmovil en el nivel nuevo.
+				RebuildSphere()
 				inGame = prevInGame
+
+				-- Red de seguridad. Si por lo que sea la esfera no acabo en el spawn
+				-- del nivel nuevo, la ponemos ahi a la fuerza: quedarse fuera del mapa
+				-- deja la partida inservible porque DieAndRespawn exige inGame y el
+				-- boton RESPAWN no llega a ejecutar nada.
+				if gameData.spherePart and gameData.spawnCFrame then
+					local d = (gameData.spherePart.Position - gameData.spawnCFrame.Position).Magnitude
+					if d > 50 then
+						warn("[ImNotASphere] la esfera quedo a " .. math.floor(d) .. " studs del spawn; reposicionando")
+						gameData.spherePart.CFrame = gameData.spawnCFrame
+						gameData.spherePart.AssemblyLinearVelocity = Vector3.zero
+						gameData.spherePart.AssemblyAngularVelocity = Vector3.zero
+					end
+				end
 			else
 				if not isVersusMode then
 					endGame()
@@ -636,7 +664,10 @@ LoadLevel = function(levelNum)
 	end
 
 	local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-	if hrp then hrp.CFrame = gameData.spawnCFrame end
+	-- El personaje esta ANCLADO mientras juegas como esfera. Aparcarlo en el
+	-- mismo punto exacto que la esfera la dejaba encajada dentro de un cuerpo
+	-- anclado, y el motor de fisica no volvia a simularla. Lo apartamos.
+	if hrp then hrp.CFrame = gameData.spawnCFrame * CFrame.new(0, -60, 0) end
 
 	local movingFolder = currentLevelFolder:FindFirstChild("MovingPlatforms")
 	if movingFolder then
@@ -690,29 +721,16 @@ LoadLevel = function(levelNum)
 end
 
 -- spawns the sphere, sets up physics, camera, lighting, and the per-frame heartbeat loop
-Setup3DGame = function(skipLoad)
-	if not skipLoad then
-		local success = LoadLevel(currentLevelNum)
-		if not success then inGame = false; ReturnToMainMenu(); return end
-	end
-
-	local char = player.Character or player.CharacterAdded:Wait()
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if hrp then hrp.Anchored = true; hrp.CFrame = gameData.spawnCFrame end
-
-	ControlModule:Disable()
-
-	gameData.ucMoveVec = Vector2.zero
-	gameData.jumpRequested = false
-	gameData.usePowerRequested = false
-
-	UniversalController.CrearControlesImNotASphere(
-		function(vec) gameData.ucMoveVec = vec end,
-		function(vec) end,
-		function() gameData.jumpRequested = true end,
-		function() gameData.usePowerRequested = true end
-	)
-
+-- ============================================================================
+-- RebuildSphere: destruye la esfera y la reconstruye desde cero.
+-- ----------------------------------------------------------------------------
+-- Los bucles de fisica y de camara son closures sobre las locales 'sphere',
+-- 'vf', 'av' y 'camProxy'. Reutilizar la esfera vieja al cambiar de nivel
+-- dejaba su assembly de fisica dormida: la gravedad no volvia a tocarla y se
+-- quedaba flotando inmovil. El primer nivel siempre funciono porque aqui la
+-- esfera se crea de cero; ahora cada cambio de nivel pasa por el mismo camino.
+-- ============================================================================
+RebuildSphere = function()
 	if gameData.spherePart then gameData.spherePart:Destroy() end
 	if gameData.camProxy then gameData.camProxy:Destroy() end
 
@@ -753,23 +771,6 @@ Setup3DGame = function(skipLoad)
 
 	local cam = workspace.CurrentCamera
 	cam.CameraType = Enum.CameraType.Custom; cam.CameraSubject = camProxy; cam.FieldOfView = 80
-
-	Lighting.TimeOfDay = "17:30:00"; Lighting.Brightness = 0.2; Lighting.Ambient = Color3.fromHex("FF6B2B")
-	Lighting.OutdoorAmbient = Color3.fromHex("FF8C42"); Lighting.ColorShift_Bottom = Color3.fromHex("FF3300"); Lighting.ColorShift_Top = Color3.fromHex("FFAA00"); Lighting.FogColor = Color3.fromHex("FF7043")
-	Lighting.FogEnd = 1500; Lighting.FogStart = 150
-
-	local sky = Instance.new("Sky", Lighting); sky.Name = "SunsetSky"; sky.SunAngularSize = 1
-	local atmosphere = Instance.new("Atmosphere", Lighting); atmosphere.Name = "SunsetAtmosphere"; atmosphere.Density = 0.25; atmosphere.Offset = 0.25; atmosphere.Color = Color3.fromHex("FF8C42"); atmosphere.Decay = Color3.fromHex("FF5522"); atmosphere.Glare = 2.0; atmosphere.Haze = 3.0
-	local clouds = Instance.new("Clouds", workspace.Terrain); clouds.Name = "SunsetClouds"; clouds.Cover = 0.6; clouds.Density = 0.4; clouds.Color = Color3.fromHex("FFDAB3")
-
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Character then
-			for _, part in ipairs(p.Character:GetDescendants()) do
-				if (part:IsA("BasePart") or part:IsA("Decal")) and part.Name ~= "HumanoidRootPart" then part.Transparency = 1 end
-			end
-		end
-	end
-
 	if gameData.physicsConnection then gameData.physicsConnection:Disconnect() end
 	RunService:UnbindFromRenderStep("SphereCamTracking")
 
@@ -828,6 +829,49 @@ Setup3DGame = function(skipLoad)
 	end)
 
 	sphere.Touched:Connect(HandleSphereCollision)
+end
+
+Setup3DGame = function(skipLoad)
+	if not skipLoad then
+		local success = LoadLevel(currentLevelNum)
+		if not success then inGame = false; ReturnToMainMenu(); return end
+	end
+
+	local char = player.Character or player.CharacterAdded:Wait()
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if hrp then hrp.Anchored = true; hrp.CFrame = gameData.spawnCFrame end
+
+	ControlModule:Disable()
+
+	gameData.ucMoveVec = Vector2.zero
+	gameData.jumpRequested = false
+	gameData.usePowerRequested = false
+
+	UniversalController.CrearControlesImNotASphere(
+		function(vec) gameData.ucMoveVec = vec end,
+		function(vec) end,
+		function() gameData.jumpRequested = true end,
+		function() gameData.usePowerRequested = true end
+	)
+
+
+	Lighting.TimeOfDay = "17:30:00"; Lighting.Brightness = 0.2; Lighting.Ambient = Color3.fromHex("FF6B2B")
+	Lighting.OutdoorAmbient = Color3.fromHex("FF8C42"); Lighting.ColorShift_Bottom = Color3.fromHex("FF3300"); Lighting.ColorShift_Top = Color3.fromHex("FFAA00"); Lighting.FogColor = Color3.fromHex("FF7043")
+	Lighting.FogEnd = 1500; Lighting.FogStart = 150
+
+	local sky = Instance.new("Sky", Lighting); sky.Name = "SunsetSky"; sky.SunAngularSize = 1
+	local atmosphere = Instance.new("Atmosphere", Lighting); atmosphere.Name = "SunsetAtmosphere"; atmosphere.Density = 0.25; atmosphere.Offset = 0.25; atmosphere.Color = Color3.fromHex("FF8C42"); atmosphere.Decay = Color3.fromHex("FF5522"); atmosphere.Glare = 2.0; atmosphere.Haze = 3.0
+	local clouds = Instance.new("Clouds", workspace.Terrain); clouds.Name = "SunsetClouds"; clouds.Cover = 0.6; clouds.Density = 0.4; clouds.Color = Color3.fromHex("FFDAB3")
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character then
+			for _, part in ipairs(p.Character:GetDescendants()) do
+				if (part:IsA("BasePart") or part:IsA("Decal")) and part.Name ~= "HumanoidRootPart" then part.Transparency = 1 end
+			end
+		end
+	end
+
+	RebuildSphere()
 end
 
 if OpenArcadeMenu then
