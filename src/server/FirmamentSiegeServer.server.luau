@@ -19,8 +19,9 @@ local FirmamentSiegeModule = require(Modules:WaitForChild("FirmamentSiegeModule"
 local UniversalLeaderboardModule = require(Modules:WaitForChild("UniversalLeaderboardModule"))
 local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
-local SettingsStore = DataStoreService:GetDataStore("FirmamentSiegeSettings_v1")
-local PurchaseHistoryStore = DataStoreService:GetDataStore("FirmamentSiege_PurchaseHistory_v1")
+local SafeStore = require(Modules:WaitForChild("DataStoreSafe"))
+local SettingsStore = SafeStore.Get("FirmamentSiegeSettings_v1")
+local PurchaseHistoryStore = SafeStore.Get("FirmamentSiege_PurchaseHistory_v1")
 
 local sessions = {}
 local playerAudioSettings = {}
@@ -280,7 +281,7 @@ Players.PlayerRemoving:Connect(function(plr)
 end)
 
 -- validates purchases with deduplication via purchase history store
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function _disabledProcessReceipt(receiptInfo)  -- centralized in DonationHandler
 	local playerId = receiptInfo.PlayerId
 	local productId = receiptInfo.ProductId
 	local purchaseId = receiptInfo.PurchaseId

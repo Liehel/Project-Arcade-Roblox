@@ -56,8 +56,20 @@ local AggregatesStore = nil
 local PlayerLogStore  = nil
 
 if RunService:IsServer() then
-	AggregatesStore = DataStoreService:GetDataStore("Analytics_Aggregates_v1")
-	PlayerLogStore  = DataStoreService:GetDataStore("Analytics_PlayerLog_v1")
+	-- GetDataStore THROWS when the place is unpublished or Studio API access is
+	-- off. At module scope that failure is cached by require(), so every server
+	-- script that requires this module fails too - one unguarded line here took
+	-- down all ten games at once.
+	-- The guards in GetAggregate / ReportSession already handle these being nil,
+	-- so degrade quietly instead of exploding.
+	local ok, err = pcall(function()
+		AggregatesStore = DataStoreService:GetDataStore("Analytics_Aggregates_v1")
+		PlayerLogStore  = DataStoreService:GetDataStore("Analytics_PlayerLog_v1")
+	end)
+	if not ok then
+		AggregatesStore, PlayerLogStore = nil, nil
+		warn("[Analytics] DataStore unavailable, analytics disabled: " .. tostring(err))
+	end
 end
 
 -- returns an empty aggregate template

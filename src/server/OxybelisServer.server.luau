@@ -51,7 +51,8 @@ else
 	warn("oxybelis: could not load UniversalLeaderboardModule")
 end
 
-local SettingsStore = DataStoreService:GetDataStore("OxybelisUserSettings_v1")
+local SafeStore = require(Modules:WaitForChild("DataStoreSafe"))
+local SettingsStore = SafeStore.Get("OxybelisUserSettings_v1")
 local sessions = {}
 local playerAudioSettings = {}
 local rateLimits = {}
@@ -212,7 +213,7 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 -- confirms donation purchases
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function _disabledProcessReceipt(receiptInfo)  -- centralized in DonationHandler
 	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 	if not player then
 		return Enum.ProductPurchaseDecision.NotProcessedYet

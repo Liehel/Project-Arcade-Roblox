@@ -26,6 +26,22 @@ local GetRecentDonations  = ensureRemote("GetRecentDonations",  "RemoteFunction"
 local GetRecentScores     = ensureRemote("GetRecentScores",     "RemoteFunction")
 local DashboardUpdated    = ensureRemote("DashboardUpdated",    "RemoteEvent")
 
+-- ── Access control ────────────────────────────────────────────────────────
+-- These dashboards expose revenue / donations / cross-game stats, so ONLY the
+-- owner (or listed admins) may read them. Add your own UserId(s) here.
+local ADMIN_IDS = {
+	-- [123456789] = true,
+}
+
+local function isAdmin(player)
+	if game.CreatorType == Enum.CreatorType.User and player.UserId == game.CreatorId then
+		return true  -- the game owner (personal place)
+	end
+	-- group game? uncomment and set your group + min rank:
+	-- if player:GetRankInGroup(YOUR_GROUP_ID) >= YOUR_MIN_RANK then return true end
+	return ADMIN_IDS[player.UserId] == true
+end
+
 -- per-(player, board) rate limit so multiple boards can refresh independently
 -- key format: "userId_gameId"
 local lastRequestAt = {}
@@ -42,31 +58,36 @@ end
 
 -- returns the dashboard payload for a single game id
 GetGameDashboard.OnServerInvoke = function(player, gameId)
-	if type(gameId) ~= "string" then return nil end
+	if not isAdmin(player) then return nil end
+	if type(gameId) ~= "string" or #gameId > 40 then return nil end
 	if rateLimited(player, gameId) then return nil end
 	return AnalyticsModule.GetGameDashboard(gameId)
 end
 
 -- returns the cross-game general dashboard payload
 GetGeneralDashboard.OnServerInvoke = function(player)
+	if not isAdmin(player) then return nil end
 	if rateLimited(player, "General") then return nil end
 	return AnalyticsModule.GetGeneralDashboard()
 end
 
 -- returns the revenue-focused dashboard payload
 GetMoneyDashboard.OnServerInvoke = function(player)
+	if not isAdmin(player) then return nil end
 	if rateLimited(player, "Money") then return nil end
 	return AnalyticsModule.GetMoneyDashboard()
 end
 
 -- returns the live donations feed (RealMoney board); lighter rate limit for near real-time
 GetRecentDonations.OnServerInvoke = function(player)
+	if not isAdmin(player) then return nil end
 	if rateLimited(player, "FeedDonations", 2.0) then return nil end
 	return AnalyticsModule.GetRecentDonations()
 end
 
 -- returns the live scores feed (RealPlayer board)
 GetRecentScores.OnServerInvoke = function(player)
+	if not isAdmin(player) then return nil end
 	if rateLimited(player, "FeedScores", 2.0) then return nil end
 	return AnalyticsModule.GetRecentScores()
 end

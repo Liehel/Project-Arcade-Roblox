@@ -380,26 +380,45 @@ local function renderState(data)
 end
 
 local leftHeld, rightHeld = false, false
+local lastDir = nil   -- which side was pressed most recently
 
--- sends the current held direction to the server
+-- Sends the held direction. With both keys down the NEWEST press wins: the
+-- old code sent "Stop" instead, so rolling A->D (or mashing them) froze the
+-- platform mid-move instead of turning it around.
 local function sendDir()
-	if leftHeld and not rightHeld then SubmitMoveInput:FireServer("Left")
-	elseif rightHeld and not leftHeld then SubmitMoveInput:FireServer("Right")
-	else SubmitMoveInput:FireServer("Stop") end
+	local dir
+	if leftHeld and rightHeld then
+		dir = lastDir or "Stop"
+	elseif leftHeld then
+		dir = "Left"
+	elseif rightHeld then
+		dir = "Right"
+	else
+		dir = "Stop"
+	end
+	SubmitMoveInput:FireServer(dir)
 end
 
 local function onMoveIzq(actionName, state, inputObject)
-	if not inGame then return Enum.ContextActionResult.Pass end
-	if state == Enum.UserInputState.Begin then leftHeld = true
+	-- Track the key state ALWAYS, even outside a match. The guard used to
+	-- run first, so a key released after the match ended never cleared its
+	-- flag: the next match started with a phantom direction held down, which
+	-- read as the platform locking up and then drifting on its own.
+	if state == Enum.UserInputState.Begin then leftHeld = true; lastDir = "Left"
 	elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then leftHeld = false end
+	if not inGame then return Enum.ContextActionResult.Pass end
 	sendDir()
 	return Enum.ContextActionResult.Sink
 end
 
 local function onMoveDer(actionName, state, inputObject)
-	if not inGame then return Enum.ContextActionResult.Pass end
-	if state == Enum.UserInputState.Begin then rightHeld = true
+	-- Track the key state ALWAYS, even outside a match. The guard used to
+	-- run first, so a key released after the match ended never cleared its
+	-- flag: the next match started with a phantom direction held down, which
+	-- read as the platform locking up and then drifting on its own.
+	if state == Enum.UserInputState.Begin then rightHeld = true; lastDir = "Right"
 	elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then rightHeld = false end
+	if not inGame then return Enum.ContextActionResult.Pass end
 	sendDir()
 	return Enum.ContextActionResult.Sink
 end
@@ -421,6 +440,7 @@ function unbindInputs()
 	UniversalController.LimpiarControles()
 	leftHeld = false
 	rightHeld = false
+	lastDir = nil
 	sendDir()
 end
 

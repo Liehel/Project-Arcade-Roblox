@@ -39,8 +39,9 @@ local Modules = ReplicatedStorage:WaitForChild("Modules")
 local UniversalLeaderboardModule = require(Modules:WaitForChild("UniversalLeaderboardModule"))
 local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
-local SettingsStore = DataStoreService:GetDataStore("TapAndHold_Settings_v1")
-local PurchaseHistoryStore = DataStoreService:GetDataStore("TapAndHold_PurchaseHistory_v1")
+local SafeStore = require(Modules:WaitForChild("DataStoreSafe"))
+local SettingsStore = SafeStore.Get("TapAndHold_Settings_v1")
+local PurchaseHistoryStore = SafeStore.Get("TapAndHold_PurchaseHistory_v1")
 local sessions = {}
 
 local DONATION_PRODUCTS = {
@@ -143,7 +144,7 @@ Players.PlayerRemoving:Connect(function(player)
 end)
 
 -- validates purchases with deduplication via purchase history store
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function _disabledProcessReceipt(receiptInfo)  -- centralized in DonationHandler
 	local playerId = receiptInfo.PlayerId
 	local productId = receiptInfo.ProductId
 	local purchaseId = receiptInfo.PurchaseId

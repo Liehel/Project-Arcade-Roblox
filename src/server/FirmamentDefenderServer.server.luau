@@ -17,8 +17,9 @@ local FirmamentModule = require(Modules:WaitForChild("FirmamentDefenderModule"))
 local UniversalLeaderboard = require(Modules:WaitForChild("UniversalLeaderboardModule"))
 local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
-local SettingsStore = DataStoreService:GetDataStore("SkyDefenderSettings_v1")
-local PurchaseHistoryStore = DataStoreService:GetDataStore("FirmamentDefender_PurchaseHistory_v1")
+local SafeStore = require(Modules:WaitForChild("DataStoreSafe"))
+local SettingsStore = SafeStore.Get("SkyDefenderSettings_v1")
+local PurchaseHistoryStore = SafeStore.Get("FirmamentDefender_PurchaseHistory_v1")
 
 local sessions = {}
 local playerAudioSettings = {}
@@ -63,6 +64,7 @@ Players.PlayerAdded:Connect(function(plr)
 end)
 
 ToggleAudio.OnServerEvent:Connect(function(plr, isEnabled)
+	if typeof(isEnabled) ~= "boolean" then return end  -- reject malformed input
 	playerAudioSettings[plr.UserId] = isEnabled
 end)
 
@@ -172,7 +174,7 @@ Players.PlayerRemoving:Connect(function(plr)
 end)
 
 -- validates purchases with deduplication via purchase history store
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function _disabledProcessReceipt(receiptInfo)  -- centralized in DonationHandler
 	local playerId = receiptInfo.PlayerId
 	local productId = receiptInfo.ProductId
 	local purchaseId = receiptInfo.PurchaseId

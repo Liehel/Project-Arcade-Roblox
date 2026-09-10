@@ -495,15 +495,22 @@ local function HandleSphereCollision(hit)
 	elseif itemName == "DeathPit" or hit.Name == "DeathPit" then
 		DieAndRespawn()
 	elseif hit.Name == "FinishLine0Finishline" or hit.Name == "FinishLine" then
+		-- [DIAG] trazas temporales para el fallo de paso al nivel 2
+		print("[SPHERE] meta tocada | monedas=" .. #gameData.coinsCollected
+			.. "/" .. #SphereModule.GameConfig.RequiredCoins
+			.. " | nivel actual=" .. tostring(currentLevelNum))
 		if #gameData.coinsCollected >= #SphereModule.GameConfig.RequiredCoins then
 			currentLevelNum = currentLevelNum + 1
 			local nextLevel = Assets:FindFirstChild("Level" .. currentLevelNum)
+			print("[SPHERE] buscando Level" .. currentLevelNum
+				.. " -> " .. (nextLevel and "ENCONTRADO" or "NO EXISTE"))
 			if nextLevel then
 				local prevInGame = inGame
 				inGame = false
 				local loadGui = Instance.new("ScreenGui", playerGui)
 				showLoadingOverlay(loadGui, "LOADING LEVEL " .. currentLevelNum .. "...")
 				local success = LoadLevel(currentLevelNum)
+				print("[SPHERE] LoadLevel(" .. currentLevelNum .. ") = " .. tostring(success))
 				if gameData.spherePart then gameData.spherePart.Anchored = true end
 				if success and currentLevelFolder then PreloadLevelAssets(currentLevelFolder); task.wait(2.5) end
 				if loadGui then loadGui:Destroy() end

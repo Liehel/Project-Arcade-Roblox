@@ -1,6 +1,11 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local RemoteGuard = require(ServerScriptService:WaitForChild("RemoteGuard"))
+local is = RemoteGuard.is
+local MAX_SCORE = 500  -- plausibility cap (solo mode rejects > 490); blocks leaderboard nukes
 
 local MatchManager = {}
 
@@ -291,7 +296,7 @@ function MatchManager.KickPlayer(hostPlayer, targetName)
 	end
 end
 
-StartMatchEvent.OnServerEvent:Connect(function(player)
+RemoteGuard.onEvent(StartMatchEvent, { rate = { max = 4, per = 1 } }, function(player)
 	local pin = playerRoomMap[player]
 	local room = rooms[pin]
 	if room and room.Host == player and room.Status == "Waiting" then
@@ -305,7 +310,11 @@ StartMatchEvent.OnServerEvent:Connect(function(player)
 	end
 end)
 
-UpdateLiveScore.OnServerEvent:Connect(function(player, newScore)
+-- score is client-reported; cap it to a plausible range so it can't nuke the board
+RemoteGuard.onEvent(UpdateLiveScore, {
+	rate = { max = 30, per = 1 },
+	args = { is.integer(0, MAX_SCORE) },
+}, function(player, newScore)
 	local pin = playerRoomMap[player]
 	local room = rooms[pin]
 	if room and room.Status == "Playing" and room.Scores[player] then
@@ -314,11 +323,14 @@ UpdateLiveScore.OnServerEvent:Connect(function(player, newScore)
 	end
 end)
 
-PlayerDiedEvent.OnServerEvent:Connect(function(player)
+RemoteGuard.onEvent(PlayerDiedEvent, { rate = { max = 6, per = 1 } }, function(player)
 	MatchManager.HandleDeath(player)
 end)
 
-MatchStatusEvent.OnServerEvent:Connect(function(player, statusType, finalScore, finalTime)
+RemoteGuard.onEvent(MatchStatusEvent, {
+	rate = { max = 6, per = 1 },
+	args = { is.string(20), is.optional(is.integer(0, MAX_SCORE)), is.optional(is.number(0, 86400000)) },
+}, function(player, statusType, finalScore, finalTime)
 	if statusType == "GameOver" then
 		local pin = playerRoomMap[player]
 		if pin then
@@ -332,12 +344,22 @@ MatchStatusEvent.OnServerEvent:Connect(function(player, statusType, finalScore, 
 	end
 end)
 
-KickPlayerEvent.OnServerEvent:Connect(function(p, t) MatchManager.KickPlayer(p, t) end)
-LeaveRoomEvent.OnServerEvent:Connect(MatchManager.RemovePlayer)
+-- KickPlayer already checks host authority internally; just type + rate guard it
+RemoteGuard.onEvent(KickPlayerEvent, {
+	rate = { max = 6, per = 1 },
+	args = { is.string(50) },
+}, function(p, t) MatchManager.KickPlayer(p, t) end)
+
+RemoteGuard.onEvent(LeaveRoomEvent, { rate = { max = 6, per = 1 } }, function(player)
+	MatchManager.RemovePlayer(player)
+end)
 Players.PlayerRemoving:Connect(MatchManager.RemovePlayer)
 
-CreateRoomFunc.OnServerInvoke = MatchManager.CreateRoom
-JoinRoomFunc.OnServerInvoke = MatchManager.JoinRoom
+RemoteGuard.onInvoke(CreateRoomFunc, { rate = { max = 4, per = 1 } }, MatchManager.CreateRoom)
+RemoteGuard.onInvoke(JoinRoomFunc, {
+	rate = { max = 6, per = 1 },
+	args = { is.string(12) },
+}, MatchManager.JoinRoom)
 
 -- cleans up waiting rooms that have been inactive longer than the timeout
 task.spawn(function()

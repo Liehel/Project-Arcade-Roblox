@@ -39,8 +39,9 @@ local FoxyModule = require(foxyLogicModule)
 local UniversalLeaderboard = require(Modules:WaitForChild("UniversalLeaderboardModule"))
 local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
-local SettingsStore = DataStoreService:GetDataStore("FoxyFruitSettings_v1")
-local PurchaseHistoryStore = DataStoreService:GetDataStore("FoxyFruit_PurchaseHistory_v1")
+local SafeStore = require(Modules:WaitForChild("DataStoreSafe"))
+local SettingsStore = SafeStore.Get("FoxyFruitSettings_v1")
+local PurchaseHistoryStore = SafeStore.Get("FoxyFruit_PurchaseHistory_v1")
 
 local sessions = {}
 local playerAudioSettings = {}
@@ -239,7 +240,7 @@ Players.PlayerRemoving:Connect(function(plr)
 end)
 
 -- validates purchases with deduplication via purchase history store
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function _disabledProcessReceipt(receiptInfo)  -- centralized in DonationHandler
 	local playerId = receiptInfo.PlayerId
 	local productId = receiptInfo.ProductId
 	local purchaseId = receiptInfo.PurchaseId

@@ -4,8 +4,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DataStoreService = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
-local AudioDataStore = DataStoreService:GetDataStore("JuiceCutter_AudioSettings_v1")
-local PurchaseHistoryStore = DataStoreService:GetDataStore("JuiceCutter_PurchaseHistory_v1")
+local SafeStore = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("DataStoreSafe"))
+local AudioDataStore = SafeStore.Get("JuiceCutter_AudioSettings_v1")
+local PurchaseHistoryStore = SafeStore.Get("JuiceCutter_PurchaseHistory_v1")
 local playerAudioSettings = {}
 
 local arc = ReplicatedStorage:WaitForChild("ArcadeRemotes")
@@ -330,7 +331,7 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 -- validates purchases with deduplication via purchase history store
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function _disabledProcessReceipt(receiptInfo)  -- centralized in DonationHandler
 	local playerId = receiptInfo.PlayerId
 	local productId = receiptInfo.ProductId
 	local purchaseId = receiptInfo.PurchaseId

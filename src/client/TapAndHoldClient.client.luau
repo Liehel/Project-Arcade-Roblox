@@ -647,7 +647,10 @@ Setup3DGame = function()
 
 	if gameData.afkConnection then gameData.afkConnection:Disconnect() end
 	gameData.afkConnection = RunService.Heartbeat:Connect(function()
-		if inGame and not gameData.isJumping and not gameData.isCharging then
+		-- AFK death is a VERSUS rule only. isVersusMode used to be checked further
+		-- down, where it only picked how to end the run - so a solo player who
+		-- stood still still fell through to endGame() and died.
+		if inGame and isVersusMode and not gameData.isJumping and not gameData.isCharging then
 			if tick() - gameData.lastLandTime >= AFK_TIMEOUT then
 				if gameData.afkConnection then gameData.afkConnection:Disconnect() gameData.afkConnection = nil end
 				if gameData.dummy then gameData.dummy.Anchored = false end

@@ -9,7 +9,6 @@ local accionesActivas      = {}
 local conexionesSueltas    = {}
 local controlesVirtualesGui = nil
 
--- shared visual style for all virtual controls
 local ESTILO = {
 	ColorSombra         = Color3.fromRGB(20, 25, 10),
 	ColorNeon           = Color3.fromRGB(154, 230, 0),
@@ -374,7 +373,7 @@ function UniversalController.CrearControlesFirmament(cbArr, cbAba, cbIzq, cbDer,
 	ContextActionService:BindAction("Firm_Abajo",     cbAba,    false, Enum.KeyCode.S, Enum.KeyCode.Down,  Enum.KeyCode.DPadDown)
 	ContextActionService:BindAction("Firm_Izquierda", cbIzq,    false, Enum.KeyCode.A, Enum.KeyCode.Left,  Enum.KeyCode.DPadLeft)
 	ContextActionService:BindAction("Firm_Derecha",   cbDer,    false, Enum.KeyCode.D, Enum.KeyCode.Right, Enum.KeyCode.DPadRight)
-	ContextActionService:BindAction("Firm_Disparo",   cbDisparo, false, Enum.KeyCode.Space, Enum.KeyCode.ButtonA, Enum.KeyCode.ButtonR2)
+	ContextActionService:BindAction("Firm_Disparo",   cbDisparo, false, Enum.KeyCode.Space, Enum.KeyCode.ButtonA, Enum.KeyCode.ButtonR2, Enum.UserInputType.MouseButton1)
 
 	if UserInputService.TouchEnabled then
 		controlesVirtualesGui = Instance.new("ScreenGui")
@@ -535,6 +534,72 @@ function UniversalController.CrearControlesImNotASphere(cbMover, cbCamara, cbSal
 			if state == Enum.UserInputState.Begin then cbSalto() end
 		end, tamanoJump)
 	end
+end
+
+
+-- WORLD MOVEMENT: SPRINT ONLY
+local SPEED_WALK   = 16
+local SPEED_SPRINT = 28
+
+local accionesMundo  = {}
+local conexionesMundo = {}
+local mundoGui        = nil
+local estaCorriendo   = false
+
+local function limpiarMovimientoMundo()
+	for _, conn in ipairs(conexionesMundo) do
+		if conn and typeof(conn) == "RBXScriptConnection" then conn:Disconnect() end
+	end
+	table.clear(conexionesMundo)
+	for _, accion in ipairs(accionesMundo) do
+		ContextActionService:UnbindAction(accion)
+	end
+	table.clear(accionesMundo)
+	if mundoGui then mundoGui:Destroy(); mundoGui = nil end
+	estaCorriendo = false
+end
+
+function UniversalController.IniciarMovimientoMundo()
+	limpiarMovimientoMundo()
+
+	local player   = Players.LocalPlayer
+	local char     = player.Character or player.CharacterAdded:Wait()
+	local humanoid = char:WaitForChild("Humanoid")
+
+	local function onSprint(_, state, _)
+		estaCorriendo = (state == Enum.UserInputState.Begin)
+		-- SwimController enforces SPEED_SWIM every frame while in water,
+		-- so sprint speed only takes effect when NOT swimming.
+		humanoid.WalkSpeed = estaCorriendo and SPEED_SPRINT or SPEED_WALK
+		return Enum.ContextActionResult.Pass
+	end
+	ContextActionService:BindAction("Mundo_Sprint", onSprint, false,
+		Enum.KeyCode.LeftShift,
+		Enum.KeyCode.ButtonL3
+	)
+	table.insert(accionesMundo, "Mundo_Sprint")
+
+	if UserInputService.TouchEnabled then
+		mundoGui = Instance.new("ScreenGui")
+		mundoGui.Name         = "WorldMovementGui"
+		mundoGui.DisplayOrder = 9998
+		mundoGui.ResetOnSpawn = false
+		mundoGui.Parent       = player:WaitForChild("PlayerGui")
+
+		crearBotonCircular(mundoGui, "Btn_Sprint",
+			UDim2.new(0.12, 0, 0.88, 0),
+			"RUN",
+			function(_, state, _)
+				estaCorriendo = (state == Enum.UserInputState.Begin)
+				humanoid.WalkSpeed = estaCorriendo and SPEED_SPRINT or SPEED_WALK
+			end,
+			UDim2.new(0.14, 0, 0.10, 0)
+		)
+	end
+end
+
+function UniversalController.LimpiarMovimientoMundo()
+	limpiarMovimientoMundo()
 end
 
 -- unbind all active actions, disconnect loose events and destroy virtual controls gui

@@ -42,7 +42,8 @@ local AvisToucanModule = require(Modules:WaitForChild("AvisToucanModule"))
 local UniversalLeaderboard = require(Modules:WaitForChild("UniversalLeaderboardModule"))
 local AnalyticsModule = require(Modules:WaitForChild("AnalyticsModule"))
 
-local SettingsStore = DataStoreService:GetDataStore("AvisToucanUserSettings_v1")
+local SafeStore = require(Modules:WaitForChild("DataStoreSafe"))
+local SettingsStore = SafeStore.Get("AvisToucanUserSettings_v1")
 local sessions = {}
 local rateLimits = {}
 
@@ -162,7 +163,7 @@ Players.PlayerAdded:Connect(function(player)
 end)
 
 -- confirms donation purchases
-MarketplaceService.ProcessReceipt = function(receiptInfo)
+local function _disabledProcessReceipt(receiptInfo)  -- centralized in DonationHandler
 	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 	if not player then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
